@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import HeroPage from './pages/HeroPage';
 import AuthPage from './pages/AuthPage';
 import BasicInfoPage from './pages/BasicInfoPage';
@@ -16,6 +16,23 @@ import InfrastructurePage from './pages/InfrastructurePage';
 import { useAuth } from './hooks/useAuth';
 import MatrixBackground from './components/MatrixBackground';
 
+function OAuthReturnRedirect() {
+  const session = useAuth((s) => s.session);
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!session || location.pathname !== '/') return;
+    const destination = sessionStorage.getItem('mclovin_auth_redirect');
+    if (destination) {
+      sessionStorage.removeItem('mclovin_auth_redirect');
+      navigate(destination, { replace: true });
+    }
+  }, [location.pathname, navigate, session]);
+
+  return null;
+}
+
 function App() {
   const initialize = useAuth((s) => s.initialize);
 
@@ -25,6 +42,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <OAuthReturnRedirect />
       <MatrixBackground />
       <Routes>
         {/* Onboarding Flow */}

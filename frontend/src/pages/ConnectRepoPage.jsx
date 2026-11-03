@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAgentStore } from '../store/agentStore';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
-import { GitBranch, Search, ArrowRight, Check, Loader, Tag, X } from 'lucide-react';
+import { GitBranch, Search, ArrowRight, Check, Loader, Tag, X, Github } from 'lucide-react';
 import { getRepos, createProject, registerUser } from '../lib/api';
 
 export default function ConnectRepoPage() {
@@ -36,7 +36,8 @@ export default function ConnectRepoPage() {
         setRepos([]);
       }
     } catch (e) {
-      setError(e.response?.data?.detail || e.message);
+      setRepos([]);
+      setError(e.response?.data?.detail || e.message || 'GitHub sync failed. You can still paste a repo URL manually.');
     } finally {
       setLoading(false);
     }
@@ -83,7 +84,7 @@ export default function ConnectRepoPage() {
 
       setRepoUrl(targetRepo.html_url);
       setProjectId(data.project.id);
-      navigate('/invite');
+      navigate('/app/projects');
     } catch (e) {
       setError(e.response?.data?.detail || e.message);
     } finally {
@@ -175,6 +176,7 @@ export default function ConnectRepoPage() {
           </div>
           <div style={styles.repoList}>
             {loading ? <p style={styles.loadingInfo}><Loader size={16} className="spin" /> Syncing with GitHub...</p> :
+              !session?.access_token ? <div style={styles.loadingInfo}><span>Sign in with GitHub to load your repositories.</span><button style={styles.signInBtn} onClick={() => navigate('/auth')}><Github size={14} /> Sign in</button></div> :
               filtered.length === 0 ? <p style={styles.loadingInfo}>No repositories found.</p> :
                 filtered.map((repo, i) => (
                   <div key={i} style={styles.repoItem} onClick={() => { setUrl(repo.html_url); handleConnect(repo.html_url, repo.name); }}>
@@ -233,6 +235,7 @@ const styles = {
   repoLang: { fontSize: 10, color: '#00ccff', marginLeft: 10, background: '#00ccff11', padding: '2px 6px', borderRadius: 4 },
   repoTime: { color: '#555', fontSize: 10, fontFamily: "'JetBrains Mono', monospace" },
   loadingInfo: { color: '#555', fontSize: 11, padding: 16, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  signInBtn: { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 10px', background: '#00ff8818', border: '1px solid #00ff8844', borderRadius: 6, color: '#00ff88', cursor: 'pointer', fontSize: 11, fontWeight: 700 },
 
   nextBtn: { width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '14px', background: 'linear-gradient(135deg, #00ff88, #00cc6a)', color: '#000', border: 'none', borderRadius: 10, fontWeight: 800, cursor: 'pointer', fontSize: 13 },
 

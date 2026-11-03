@@ -44,6 +44,7 @@ class AgentState(TypedDict):
     status: str
     results: Optional[dict]
     causal_graph: Optional[dict]
+    whitebox: Optional[dict]
     health_before: int
     health_after: int
     db_iteration_id: int
@@ -110,6 +111,14 @@ class OrchestratorAgent:
 
         failures = self.analyzer.run(state["repo_path"], run_id=run_id)
         state["failures"] = failures
+        state["whitebox"] = getattr(self.analyzer, "whitebox_report", None) or {
+            "enabled": True,
+            "status": "PARTIAL",
+            "coverage": None,
+            "uncovered_paths": [],
+            "generated_tests": [],
+            "reason": "White-box analysis unavailable.",
+        }
         
         # Health score (before) = 100 - (failures * 5), capped at 0
         if state["iteration"] == 1:
@@ -351,7 +360,8 @@ class OrchestratorAgent:
             fixes=state["fixes_applied"],
             health_score={"before": state.get("health_before", 0), "after": state.get("health_after", 0)},
             causal_graph=state.get("causal_graph"),
-            branch_name=branch_name
+            branch_name=branch_name,
+            whitebox=state.get("whitebox")
         )
 
         state["results"] = results

@@ -99,26 +99,24 @@ async def register_user(req: EnsureUserRequest, request: Request):
 async def fetch_github_repos(request: Request):
     try:
         await verify_token(request)
+        github_token = request.headers.get("X-GitHub-Token")
         logger.info("Token verified, fetching repos...")
-        repos = await get_user_repositories()
+        repos = await get_user_repositories(github_token)
         logger.info(f"Successfully fetched {len(repos)} repos from GitHub API")
         return {"repos": repos}
     except HTTPException:
-        # Propagation for existing HTTPExceptions (like from verify_token)
         raise
     except ValueError as e:
-        # Typically missing GITHUB_TOKEN
         logger.error(f"Configuration error fetching repos: {e}")
         raise HTTPException(status_code=401, detail=str(e))
     except RuntimeError as e:
-        # GitHub API errors (mapped from 401/403 if present in message)
         err_msg = str(e)
-        status = 502 # Bad Gateway as default for upstream failure
+        status = 502
         if "401" in err_msg:
             status = 401
         elif "403" in err_msg:
             status = 403
-        
+
         logger.error(f"GitHub API error in route: {err_msg}")
         raise HTTPException(status_code=status, detail=err_msg)
     except Exception as e:
@@ -155,6 +153,21 @@ async def list_projects(request: Request):
         raise
     except Exception as e:
         logger.exception("Failed to list projects: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/projects/{project_id}")
+async def fetch_project(project_id: str, request: Request):
+    try:
+        await verify_token(request)
+        user_id = get_user_id(request)
+        project = get_project(project_id)
+        if not project or project["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return project
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to fetch project %s: %s", project_id, e)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/projects/{project_id}/graph")

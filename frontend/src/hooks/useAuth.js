@@ -11,6 +11,11 @@ export const useAuth = create((set) => ({
   setLoading: (loading) => set({ loading }),
 
   initialize: async () => {
+    if (!supabase) {
+      set({ session: null, user: null, loading: false });
+      return;
+    }
+
     const { data: { session } } = await supabase.auth.getSession();
     set({ session, user: session?.user || null, loading: false });
 

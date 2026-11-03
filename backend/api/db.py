@@ -5,6 +5,9 @@ import os
 import json
 from datetime import datetime
 from dotenv import load_dotenv
+from sqlalchemy import func
+from db.db import SessionLocal
+from db.models import Issue, Project, Run, User
 
 def get_db_connection():
     load_dotenv()
@@ -51,59 +54,65 @@ def _resolve_pg_enum_value(conn, enum_type_name: str, desired_value: str, fallba
 
 # --- USERS ---
 def ensure_user(user_id: str, email: str, profile_data: dict = None):
-    conn = get_db_connection()
+    db = SessionLocal()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO users (id, email, profile_data) 
-                VALUES (%s, %s, %s) 
-                ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email
-                """,
-                (user_id, email, json.dumps(profile_data or {}))
-            )
-        conn.commit()
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.email = email
+            user.profile_data = profile_data or {}
+        else:
+            db.add(User(id=user_id, email=email, profile_data=profile_data or {}))
+        db.commit()
     finally:
-        conn.close()
+        db.close()
 
 # --- PROJECTS ---
 def create_project(user_id: str, repo_url: str, name: str, tags: list, visibility: str = 'private'):
-    conn = get_db_connection()
+    db = SessionLocal()
     try:
         visibility_val = visibility.value if hasattr(visibility, 'value') else visibility
         project_id = str(uuid.uuid4())[:8]
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                INSERT INTO projects (id, user_id, repo_url, name, tags, visibility) 
-                VALUES (%s, %s, %s, %s, %s::json, %s) RETURNING *
-                """,
-                (project_id, user_id, repo_url, name, json.dumps(tags), visibility_val)
-            )
-            project = cur.fetchone()
-        conn.commit()
-        return project
+        project = Project(
+            id=project_id,
+            user_id=user_id,
+            repo_url=repo_url,
+            name=name,
+            tags=tags,
+            visibility=visibility_val,
+        )
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        return _project_to_dict(project)
     finally:
-        conn.close()
+        db.close()
 
 def get_projects(user_id: str):
-    conn = get_db_connection()
+    db = SessionLocal()
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM projects WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
-            return cur.fetchall()
+        projects = db.query(Project).filter(Project.user_id == user_id).order_by(Project.created_at.desc()).all()
+        return [_project_to_dict(project) for project in projects]
     finally:
-        conn.close()
+        db.close()
 
 def get_project(project_id: str):
-    conn = get_db_connection()
+    db = SessionLocal()
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM projects WHERE id = %s", (project_id,))
-            return cur.fetchone()
+        project = db.query(Project).filter(Project.id == project_id).first()
+        return _project_to_dict(project) if project else None
     finally:
-        conn.close()
+        db.close()
 
+def _project_to_dict(project: Project):
+    return {
+        "id": project.id,
+        "user_id": project.user_id,
+        "repo_url": project.repo_url,
+        "name": project.name,
+        "tags": project.tags or [],
+        "visibility": project.visibility.value if hasattr(project.visibility, "value") else project.visibility,
+        "created_at": project.created_at,
+    }
 # --- RUNS ---
 def create_run(run_id: str, project_id: str, repo_url: str, team_name: str, leader_name: str, branch_name: str = "main"):
     conn = get_db_connection()
@@ -158,18 +167,13 @@ def get_latest_run(project_id: str):
 
 # --- ISSUES & TASKS ---
 def get_project_stats(project_id: str):
-    conn = get_db_connection()
+    db = SessionLocal()
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT COUNT(*) as run_count FROM runs WHERE project_id = %s", (project_id,))
-            runs = cur.fetchone()['run_count']
-            
-            cur.execute("SELECT COUNT(*) as issue_count FROM issues WHERE project_id = %s", (project_id,))
-            issues = cur.fetchone()['issue_count']
-            
-            return {"runs": runs, "issues": issues}
+        runs = db.query(func.count(Run.id)).filter(Run.project_id == project_id).scalar() or 0
+        issues = db.query(func.count(Issue.id)).filter(Issue.project_id == project_id).scalar() or 0
+        return {"runs": runs, "issues": issues}
     finally:
-        conn.close()
+        db.close()
 
 def create_issue(project_id: str, file: str, severity: str, status: str = 'open', assigned_to: str = 'Unassigned'):
     conn = get_db_connection()

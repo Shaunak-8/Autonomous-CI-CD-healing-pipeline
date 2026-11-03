@@ -4,6 +4,7 @@ import { GitBranch, CheckCircle, AlertCircle, Shield, Zap, Terminal } from 'luci
 const iconMap = {
   RUN_STARTED: { icon: <GitBranch size={13} />, color: '#00ff88' },
   ANALYSIS_STARTED: { icon: <Terminal size={13} />, color: '#00ccff' },
+  WHITEBOX_ANALYSIS: { icon: <Shield size={13} />, color: '#a855f7' },
   FAILURE_DETECTED: { icon: <AlertCircle size={13} />, color: '#ff3b3b' },
   FIX_ROUTED: { icon: <Zap size={13} />, color: '#ffaa00' },
   FIX_APPLIED: { icon: <CheckCircle size={13} />, color: '#00ff88' },

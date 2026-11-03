@@ -11,6 +11,31 @@ logger = logging.getLogger(__name__)
 
 GIT_TIMEOUT = 120  # seconds
 
+
+def normalize_repo_url(url: str) -> str:
+    """Convert browser URLs like /tree/main into a valid git clone URL."""
+    if not url:
+        return url
+
+    cleaned = url.strip()
+    cleaned = cleaned.replace("\\", "/")
+
+    # Strip common GitHub UI path suffixes like /tree/main, /blob/main, /issues, etc.
+    cleaned = re.sub(r"/tree/.*$", "", cleaned)
+    cleaned = re.sub(r"/blob/.*$", "", cleaned)
+    cleaned = re.sub(r"/pull/.*$", "", cleaned)
+    cleaned = re.sub(r"/issues/.*$", "", cleaned)
+    cleaned = re.sub(r"/commit/.*$", "", cleaned)
+
+    cleaned = re.sub(r"https://github.com/", "https://github.com/", cleaned)
+    cleaned = cleaned.rstrip("/")
+
+    if "github.com" in cleaned and not cleaned.endswith(".git"):
+        cleaned = f"{cleaned}.git"
+
+    return cleaned
+
+
 def run_git_command(repo_path: str, cmd: list, mask_token: str = None, timeout: int = GIT_TIMEOUT) -> tuple:
     """Helper to run git subprocesses with timeout and masked logging."""
     log_cmd = " ".join(cmd)
@@ -115,7 +140,7 @@ def push_changes(repo_path: str, token: str, branch_name: str) -> dict:
     
     # Extract original URL safely
     success, origin_url, err = run_git_command(repo_path, ["git", "remote", "get-url", "origin"])
-    origin_url = origin_url.strip()
+    origin_url = normalize_repo_url(origin_url.strip())
     
     if not success or not origin_url:
         logger.error("[V3] Could not determine origin URL. Cannot construct Auth URL.")
@@ -203,7 +228,9 @@ def clone_repo(url: str, path: str, token: str = None):
     if not effective_token:
         logger.error("[V3] No token available for clone.")
         return None
-    clean_url = re.sub(r"https://[^@]+@github.com/", "https://github.com/", url)
+
+    clean_url = normalize_repo_url(url)
+    clean_url = re.sub(r"https://[^@]+@github.com/", "https://github.com/", clean_url)
     if not clean_url.endswith(".git") and "github.com" in clean_url:
         clean_url = clean_url.rstrip('/') + ".git"
     auth_url = clean_url.replace("https://github.com/", f"https://x-access-token:{effective_token}@github.com/")

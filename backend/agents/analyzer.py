@@ -3,14 +3,16 @@ import re
 from typing import Optional
 from agents.schema import FailureRecord
 from api.sse import emit
+from whitebox import WhiteBoxAnalyzer
 
 class AnalyzerAgent:
     def __init__(self):
-        pass
+        self.whitebox_report = None
 
     def run(self, repo_path: str, run_id: str = None):
         """Run all linters and tests, return grouped failures."""
         failures = []
+        self.whitebox_report = None
         
         def _emit(msg, status="ANALYZING"):
             if run_id:
@@ -38,6 +40,22 @@ class AnalyzerAgent:
         # 5. C++ Checks
         _emit("Running G++ Check...")
         failures.extend(self._tag(linters.run_gpp_check(repo_path), "SYNTAX"))
+
+        _emit("Running white-box analysis...", "WHITEBOX_ANALYSIS")
+        try:
+            self.whitebox_report = WhiteBoxAnalyzer(repo_path).analyze_repository()
+            if self.whitebox_report.get("generated_tests"):
+                _emit(f"White-box analysis generated {len(self.whitebox_report['generated_tests'])} targeted tests.", "WHITEBOX_ANALYSIS")
+        except Exception as exc:
+            self.whitebox_report = {
+                "enabled": True,
+                "status": "PARTIAL",
+                "coverage": None,
+                "uncovered_paths": [],
+                "generated_tests": [],
+                "reason": f"White-box analysis failed: {exc}",
+            }
+            _emit(self.whitebox_report["reason"], "WHITEBOX_ANALYSIS")
         
         # Deduplication and prioritization
         # If a line has a SyntaxError, we prioritize that over logic.

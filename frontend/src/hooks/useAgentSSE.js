@@ -8,6 +8,7 @@ export const useAgentSSE = (runId) => {
   const setScore = useAgentStore((s) => s.setScore);
   const setHealthScore = useAgentStore((s) => s.setHealthScore);
   const setCausalGraph = useAgentStore((s) => s.setCausalGraph);
+  const setWhiteBox = useAgentStore((s) => s.setWhiteBox);
   const setStatus = useAgentStore((s) => s.setStatus);
   const setEndTime = useAgentStore((s) => s.setEndTime);
   const setTotals = useAgentStore((s) => s.setTotals);
@@ -51,6 +52,7 @@ export const useAgentSSE = (runId) => {
               if (result.score) setScore(result.score);
               if (result.health_score) setHealthScore(result.health_score);
               if (result.causal_graph) setCausalGraph(result.causal_graph);
+              if (result.whitebox) setWhiteBox(result.whitebox);
               if (result.total_failures !== undefined) setTotals(result.total_failures, result.total_fixes);
 
               // Respect backend final status (PASSED/FAILED/etc)

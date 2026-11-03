@@ -1,5 +1,12 @@
 import axios from 'axios';
-import { getAccessToken, getGitHubToken } from './supabase';
+import { getAccessToken, supabase } from './supabase';
+
+const getGitHubToken = async () => {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  const session = data?.session;
+  return session?.provider_token || session?.provider_access_token || null;
+};
 
 const baseUrl = import.meta.env.VITE_API_URL || '';
 

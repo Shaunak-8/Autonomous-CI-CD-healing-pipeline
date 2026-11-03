@@ -2,35 +2,35 @@ import os
 import httpx
 from dotenv import load_dotenv
 
-async def get_user_repositories():
-    """Fetch repositories accessible by the configured GITHUB_TOKEN."""
+async def get_user_repositories(token: str | None = None):
+    """Fetch repositories accessible by the user GitHub token or env fallback."""
     load_dotenv()
-    token = os.getenv("GITHUB_TOKEN")
-    
+    token = (token or os.getenv("GITHUB_TOKEN") or "").strip()
+
     if not token:
-        raise ValueError("GITHUB_TOKEN is missing in environment variables.")
-        
+        raise ValueError("GitHub token is missing. Provide a valid OAuth token or configure GITHUB_TOKEN.")
+
     headers = {
-        "Authorization": f"token {token}",
+        "Authorization": f"Bearer {token}" if not token.startswith("ghp_") and not token.startswith("github_pat_") else f"token {token}",
         "Accept": "application/vnd.github.v3+json"
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
-            # Fetching user's own repos and repos they collaborate on
-            response = await client.get("https://api.github.com/user/repos?per_page=100&sort=updated", headers=headers)
-            
+            response = await client.get(
+                "https://api.github.com/user/repos?per_page=100&sort=updated",
+                headers=headers,
+            )
+
             if response.status_code != 200:
                 error_msg = f"GitHub API failed with status {response.status_code}: {response.text}"
                 raise RuntimeError(error_msg)
-            
+
             repos = response.json()
     except Exception as e:
-        # Re-raise or propagate with context
         print(f"Error in get_user_repositories: {e}")
         raise
-    
-    # Format for frontend consumption
+
     return [
         {
             "id": repo.get("id"),

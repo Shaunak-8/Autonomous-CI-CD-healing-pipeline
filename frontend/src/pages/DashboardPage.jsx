@@ -14,6 +14,7 @@ import CICDTimeline from '../components/CICDTimeline';
 import RepoHealthScore from '../components/RepoHealthScore';
 import CausalityGraph from '../components/CausalityGraph';
 import StatusBadge from '../components/StatusBadge';
+import WhiteBoxPanel from '../components/WhiteBoxPanel';
 import { Activity, Brain, Loader, X, Layout, Search, Command, Shield, Zap, Globe, Terminal, Network } from 'lucide-react';
 import { getRootCauseAnalysis, getProjects, getProject } from '../lib/api';
 
@@ -32,6 +33,7 @@ export default function DashboardPage() {
   const score = useAgentStore(s => s.score);
   const healthScore = useAgentStore(s => s.healthScore);
   const causalGraph = useAgentStore(s => s.causalGraph);
+  const whitebox = useAgentStore(s => s.whitebox);
   const totalFailures = useAgentStore(s => s.totalFailures);
   const totalFixes = useAgentStore(s => s.totalFixes);
 
@@ -148,6 +150,14 @@ export default function DashboardPage() {
                 </div>
                 <RepoHealthScore healthScore={healthScore} />
                 <ScoreBreakdown score={score} />
+            </div>
+
+            <div style={styles.section}>
+                <div style={styles.sectionHeader}>
+                    <Shield size={14} color="var(--cyan)" />
+                    <span style={styles.sectionTitle}>WHITE_BOX_TESTING</span>
+                </div>
+                <WhiteBoxPanel whitebox={whitebox} />
             </div>
             
             <button 
