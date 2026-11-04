@@ -5,6 +5,7 @@ import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
 import { GitBranch, Search, ArrowRight, Check, Loader, Tag, X, Github } from 'lucide-react';
 import { getRepos, createProject, registerUser } from '../lib/api';
+import { saveGitHubToken, clearGitHubToken } from '../lib/authFlow';
 
 export default function ConnectRepoPage() {
   const navigate = useNavigate();
@@ -22,24 +23,42 @@ export default function ConnectRepoPage() {
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState(null);
+  const [githubToken, setGithubToken] = useState('');
+  const [tokenMessage, setTokenMessage] = useState('');
 
-  const fetchRepos = async () => {
+  const fetchRepos = async (token) => {
     setLoading(true);
     setError(null);
 
     try {
-      const data = await getRepos();
+      const data = await getRepos(token);
 
       if (data && data.repos) {
         setRepos(data.repos);
       } else {
         setRepos([]);
       }
+      return true;
     } catch (e) {
       setRepos([]);
       setError(e.response?.data?.detail || e.message || 'GitHub sync failed. You can still paste a repo URL manually.');
+      return false;
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleUseToken = async () => {
+    const token = githubToken.trim();
+    setTokenMessage('');
+    if (!session?.user?.id || !token || /\s/.test(token)) {
+      setError('Enter a valid GitHub personal access token.');
+      return;
+    }
+    if (await fetchRepos(token)) {
+      saveGitHubToken(token, session.user.id);
+      setGithubToken('');
+      setTokenMessage('Token connected for this browser session. You can reuse it until it expires or is revoked.');
     }
   };
 
@@ -108,6 +127,20 @@ export default function ConnectRepoPage() {
         <p style={styles.eyebrow}>STEP 3 OF 4</p>
         <h1 style={styles.title}>Connect Your Repository</h1>
         <p style={styles.sub}>Paste a GitHub URL or select from your repos.</p>
+        <details style={{ marginBottom: 24, color: '#aaa', fontSize: 12 }}>
+          <summary style={{ cursor: 'pointer' }}>Use a GitHub personal access token</summary>
+          <p>GitHub sign-in normally connects automatically. You can also use an existing token with access to your repositories.</p>
+          <label htmlFor="github-token">GitHub token</label>
+          <div style={{ ...styles.urlBox, marginTop: 8, marginBottom: 8 }}>
+            <input id="github-token" type="password" autoComplete="off" spellCheck={false}
+              style={styles.urlInput} placeholder="Paste your GitHub token" value={githubToken}
+              onChange={(event) => setGithubToken(event.target.value)} />
+            <button style={styles.connectBtn} disabled={loading || !githubToken.trim()} onClick={handleUseToken}>Use token</button>
+          </div>
+          <p>Kept in this browser session and cleared when you sign out.</p>
+          <button style={styles.connectBtn} onClick={() => { clearGitHubToken(); setTokenMessage('Manual token removed.'); fetchRepos(); }}>Remove token</button>
+          {tokenMessage && <p role="status">{tokenMessage}</p>}
+        </details>
 
         {/* URL Input */}
         <div style={styles.urlBox}>
@@ -166,7 +199,7 @@ export default function ConnectRepoPage() {
           )}
         </div>
 
-        {error && <p style={styles.error}>{error}</p>}
+        {error && <p role="alert" style={styles.error}>{error}</p>}
 
         {/* Repo List */}
         <div style={styles.repoSection}>

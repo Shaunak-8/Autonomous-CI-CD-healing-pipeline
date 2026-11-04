@@ -1,6 +1,15 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import hashlib
+from pathlib import Path
+import config
+
+_backend_root = Path(__file__).resolve().parent
+PIPELINE_REVISION = hashlib.sha256(b''.join(
+    (_backend_root / filename).read_bytes()
+    for filename in ('agents/orchestrator.py', 'agents/fixer.py', 'core/gemini_client.py')
+)).hexdigest()[:12]
 
 # ✅ Safe import (prevents crash if missing)
 try:
@@ -44,7 +53,10 @@ app.include_router(sse_router)
 # Health check
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "max_retries": MAX_RETRIES}
+    return {"status": "ok", "max_retries": MAX_RETRIES, 'pipeline_revision': PIPELINE_REVISION,
+            'ai': {'primary': config.LLM_PRIMARY_PROVIDER,
+                   'groq': {'configured': bool(config.GROQ_API_KEY), 'model': config.GROQ_MODEL},
+                   'gemini': {'configured': bool(config.GEMINI_API_KEY), 'model': config.GEMINI_MODEL}}}
 
 # Root
 @app.get("/")

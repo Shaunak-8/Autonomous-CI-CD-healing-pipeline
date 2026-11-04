@@ -2,6 +2,8 @@ import os
 import subprocess
 import tempfile
 import shutil
+import re
+import sys
 from typing import Optional
 try:
     from e2b import Sandbox
@@ -58,7 +60,7 @@ class E2BSandbox:
             ext = os.path.splitext(file_path)[1]
             if ext == ".py":
                 result = subprocess.run(
-                    ["python3", "-m", "py_compile", file_path],
+                    [sys.executable, "-m", "py_compile", file_path],
                     capture_output=True, text=True, timeout=30,
                 )
                 if result.returncode != 0:
@@ -71,13 +73,13 @@ class E2BSandbox:
     def validate_tests(self, repo_path: str) -> dict:
         """Run tests in the repo and return pass/fail counts."""
         if not repo_path or not os.path.isdir(repo_path):
-            return {"passed": 0, "failed": 0, "output": "", "error": f"Invalid repo_path: {repo_path}"}
+            return {"passed": 0, "failed": 0, "output": "", "complete": False, "error": f"Invalid repo_path: {repo_path}"}
 
         # Detect test runner
         if os.path.exists(os.path.join(repo_path, "package.json")):
-            cmd = ["npx", "jest", "--no-coverage"]
+            cmd = [shutil.which('npm.cmd' if os.name == 'nt' else 'npm') or 'npm', 'run', 'test']
         else:
-            cmd = ["pytest", "--tb=short", "-q"]
+            cmd = [sys.executable, '-m', "pytest", "--tb=short", "-q"]
 
         res = self.run_command(cmd, cwd=repo_path)
         
@@ -85,22 +87,15 @@ class E2BSandbox:
         passed = 0
         failed = 0
         
-        # Simple parsing for pytest
-        for line in output.splitlines():
-            if "passed" in line and "=" in line:
-                for word in line.split():
-                    if word.isdigit():
-                        passed = int(word)
-                        break
-            if "failed" in line and "=" in line:
-                for word in line.split():
-                    if word.isdigit():
-                        failed = int(word)
-                        break
+        passed_counts = re.findall(r'(\d+)\s+passed\b', output)
+        failed_counts = re.findall(r'(\d+)\s+failed\b', output)
+        passed = int(passed_counts[-1]) if passed_counts else 0
+        failed = int(failed_counts[-1]) if failed_counts else 0
         
         return {
             "passed": passed,
             "failed": failed,
+            'complete': res['success'] and passed > 0,
             "output": output,
             "error": res["stderr"] if not res["success"] else ""
         }

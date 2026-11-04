@@ -2,7 +2,10 @@ from tools.sandbox import E2BSandbox
 import tempfile
 import subprocess
 import os
+import sys
 from api.enums import IterationStatusEnum
+from core.repository import RepositoryInventory
+from tools.checks import run_repository_checks
 
 class ValidatorAgent:
     def __init__(self):
@@ -11,20 +14,13 @@ class ValidatorAgent:
     def validate(self, repo_path: str, bug_type: str = None) -> dict:
         """Re-run tests to see if the fix actually worked."""
         
-        # Use the sandbox to run validation tests
-        res = self.sandbox.validate_tests(repo_path)
-        
-        status = IterationStatusEnum.passed if res["failed"] == 0 and res["passed"] > 0 else IterationStatusEnum.failed
-        
-        # Special case: if no tests ran, check if it's just a linting fix
-        if res["passed"] == 0 and res["failed"] == 0:
-            # We assume it passed if it compiled (already checked in sandbox.execute_fix)
-            status = IterationStatusEnum.passed
-
+        res = run_repository_checks(RepositoryInventory(repo_path))
+        status = IterationStatusEnum.passed if res['passed'] else IterationStatusEnum.failed
         return {
             "status": status.value,
-            "remaining_failures": res["failed"],
-            "output": res["output"]
+            "remaining_failures": len(res['failures']),
+            "output": '\n'.join(f"{c['name']}: {c['status']}" for c in res['checks']),
+            "check_report": res,
         }
 
 def validate_fix(fix: str, failure) -> bool:
@@ -40,7 +36,7 @@ def validate_fix(fix: str, failure) -> bool:
             f.write(fix)
         
         result = subprocess.run(
-            ["python3", "-m", "py_compile", tmp_path],
+            [sys.executable, "-m", "py_compile", tmp_path],
             capture_output=True, text=True, timeout=10
         )
         os.unlink(tmp_path)

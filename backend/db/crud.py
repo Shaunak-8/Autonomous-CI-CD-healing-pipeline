@@ -1,10 +1,12 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from db import models
 from typing import Optional
 from types import SimpleNamespace
 
 def _resolve_enum_label(db: Session, enum_type_name: str, desired_value: str, fallback_value: Optional[str] = None) -> str:
+    if db.get_bind().dialect.name != 'postgresql':
+        return desired_value
     rows = db.execute(
         text(
             """
@@ -65,13 +67,16 @@ def get_runs(db: Session, skip: int = 0, limit: int = 100):
 def get_run(db: Session, run_id: str):
     return db.query(models.Run).filter(models.Run.id == run_id).first()
 
-def update_run(db: Session, run_id: str, status: Optional[str] = None, overall_score: Optional[float] = None, memory: Optional[dict] = None, total_failures: Optional[int] = None, total_fixes: Optional[int] = None):
+def update_run(db: Session, run_id: str, status: Optional[str] = None, overall_score: Optional[float] = None, memory: Optional[dict] = None, total_failures: Optional[int] = None, total_fixes: Optional[int] = None, branch_name: Optional[str] = None):
     db_run = get_run(db, run_id)
     if not db_run:
         raise ValueError(f"Run with id '{run_id}' not found")
 
     update_fields = []
     params = {"run_id": run_id}
+    if branch_name is not None:
+        update_fields.append('branch_name = :branch_name')
+        params['branch_name'] = branch_name
 
     if status is not None:
         update_fields.append("status = :status")
@@ -90,10 +95,10 @@ def update_run(db: Session, run_id: str, status: Optional[str] = None, overall_s
         params["total_fixes"] = total_fixes
 
     if update_fields:
-        db.execute(
-            text(f"UPDATE runs SET {', '.join(update_fields)} WHERE id = :run_id"),
-            params,
-        )
+        statement = text(f"UPDATE runs SET {', '.join(update_fields)} WHERE id = :run_id")
+        if memory is not None:
+            statement = statement.bindparams(bindparam('memory', type_=models.Run.__table__.c.memory.type))
+        db.execute(statement, params)
         db.commit()
 
     return get_run(db, run_id)
@@ -183,3 +188,10 @@ def create_fix(
 
 def get_fixes_by_run(db: Session, run_id: str):
     return db.query(models.Fix).filter(models.Fix.run_id == run_id).order_by(models.Fix.created_at.asc()).all()
+
+
+def revert_iteration_fixes(db: Session, iteration_id: int):
+    status = _resolve_enum_label(db, 'fixstatusenum', 'reverted', 'failed')
+    db.execute(text('UPDATE fixes SET status = :status WHERE iteration_id = :iteration_id'),
+               {'status': status, 'iteration_id': iteration_id})
+    db.commit()

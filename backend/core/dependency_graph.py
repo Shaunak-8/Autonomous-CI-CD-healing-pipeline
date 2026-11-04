@@ -44,10 +44,8 @@ class DependencyGraph:
                         self.edges.append({"source": node, "target": target})
 
     def get_root_nodes(self) -> list:
-        incoming = {node: 0 for node in self.nodes}
-        for edge in self.edges:
-            incoming[edge["target"]] += 1
-        return [node for node in self.nodes if incoming[node] == 0]
+        # Edges point from an importer to its dependency: dependencies are fixed first.
+        return [node for node in self.nodes if not self._adjacency[node]]
 
     def get_blast_radius(self, node_id: str) -> int:
         if node_id not in self._adjacency:
@@ -55,16 +53,17 @@ class DependencyGraph:
 
         visited = set()
 
-        def dfs(n):
-            if n in visited:
-                return 0
-            visited.add(n)
-            count = 1
-            for neighbor in self._adjacency.get(n, []):
-                count += dfs(neighbor)
-            return count
-
-        return max(0, dfs(node_id) - 1)
+        dependents = {node: [] for node in self.nodes}
+        for source, targets in self._adjacency.items():
+            for target in targets:
+                dependents[target].append(source)
+        pending = [node_id]
+        while pending:
+            node = pending.pop()
+            if node not in visited:
+                visited.add(node)
+                pending.extend(dependents.get(node, []))
+        return max(0, len(visited) - 1)
 
     def to_dict(self) -> dict:
         return {

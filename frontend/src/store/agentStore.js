@@ -18,7 +18,10 @@ export const useAgentStore = create((set) => ({
   endTime: null,
   totalFailures: 0,
   totalFixes: 0,
-  branch: "HOGRIDERS_EKLAVYA_PURI_AI_Fix",
+  repositoryProfile: null,
+  analysis: null,
+  branch: "",
+  push: null,
   
   // Actions
   setProjectId: (id) => set({ projectId: id }),
@@ -37,6 +40,8 @@ export const useAgentStore = create((set) => ({
   setStartTime: (startTime) => set({ startTime }),
   setEndTime: (endTime) => set({ endTime }),
   setTotals: (failures, fixes) => set({ totalFailures: failures, totalFixes: fixes }),
+  setRepositoryProfile: (repositoryProfile) => set({ repositoryProfile }),
+  setAnalysis: (analysis) => set({ analysis }),
   reset: () => set({
     runId: null,
     repoUrl: "",
@@ -52,5 +57,9 @@ export const useAgentStore = create((set) => ({
     endTime: null,
     totalFailures: 0,
     totalFixes: 0,
+    repositoryProfile: null,
+    analysis: null,
+    branch: "",
+    push: null,
   })
 }));

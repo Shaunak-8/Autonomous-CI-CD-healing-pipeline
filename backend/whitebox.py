@@ -45,7 +45,7 @@ class WhiteBoxAnalyzer:
             "branches": [],
         }
 
-    def analyze_repository(self) -> Dict[str, Any]:
+    def analyze_repository(self, inventory=None, run_coverage=True) -> Dict[str, Any]:
         if not self.repo_path or not os.path.isdir(self.repo_path):
             return {
                 "enabled": True,
@@ -57,12 +57,9 @@ class WhiteBoxAnalyzer:
                 "reason": "Repository path is missing or invalid.",
             }
 
-        py_files = [
-            os.path.relpath(os.path.join(root, name), self.repo_path)
-            for root, _, files in os.walk(self.repo_path)
-            for name in files
-            if name.endswith(".py")
-        ]
+        from core.repository import RepositoryInventory
+        inventory = inventory or RepositoryInventory(self.repo_path)
+        py_files = inventory.source_files('python')
 
         if not py_files:
             return {
@@ -75,7 +72,10 @@ class WhiteBoxAnalyzer:
                 "reason": "white-box analysis not supported for this language",
             }
 
-        coverage_report = self.collect_coverage(self.repo_path, allow_missing=True)
+        coverage_report = self.collect_coverage(self.repo_path, allow_missing=True) if run_coverage else {
+            'status': 'PARTIAL', 'coverage': None,
+            'reason': 'Static branch analysis only; coverage was not measured.',
+        }
         coverage = coverage_report.get("coverage")
 
         uncovered_paths: List[Dict[str, Any]] = []
@@ -84,8 +84,13 @@ class WhiteBoxAnalyzer:
             analysis = self.analyze_python_file(full_path)
             uncovered_paths.extend(self._derive_uncovered_paths(file_path, analysis))
 
+        if not run_coverage:
+            for branch in uncovered_paths:
+                branch['coverage_status'] = 'UNMEASURED'
+                branch['type'] = 'STATIC_BRANCH'
+
         generated_tests: List[Dict[str, Any]] = []
-        for branch in uncovered_paths[:3]:
+        for branch in (uncovered_paths[:3] if run_coverage else []):
             test_name = f"test_{branch['function']}_{branch['line']}"
             full_path = os.path.join(self.repo_path, branch["file"])
             test_code = self.generate_targeted_test(branch, full_path)

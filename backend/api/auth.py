@@ -3,6 +3,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
 from config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from supabase import create_client, Client
+from starlette.concurrency import run_in_threadpool
+from supabase_auth.errors import AuthApiError, AuthRetryableError
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +16,14 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 async def verify_token(request: Request):
     """Verify the Supabase JWT using the Supabase client."""
     auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
+    parts = auth_header.split() if auth_header else []
+    if len(parts) != 2 or parts[0].lower() != 'bearer' or parts[1] in {'undefined', 'null'}:
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     
-    token = auth_header.split(" ")[1]
+    token = parts[1]
     
     try:
-        response = supabase.auth.get_user(token)
+        response = await run_in_threadpool(supabase.auth.get_user, token)
         user = response.user
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
@@ -27,9 +31,16 @@ async def verify_token(request: Request):
         request.state.user_id = user.id
         request.state.email = user.email
         return {"sub": user.id, "email": user.email}
-    except Exception as e:
-        logger.error("JWT Verification failed via Supabase. Error: %s", e)
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+    except HTTPException:
+        raise
+    except (AuthRetryableError, httpx.RequestError):
+        raise HTTPException(status_code=503, detail='Authentication service is temporarily unavailable. Please retry.')
+    except AuthApiError as exc:
+        code = 503 if int(exc.status or 0) >= 500 else 401
+        raise HTTPException(status_code=code, detail='Authentication service unavailable' if code == 503 else 'Your session has expired or is invalid. Please sign in again.')
+    except Exception as exc:
+        logger.warning('Authentication verification failed (%s)', type(exc).__name__)
+        raise HTTPException(status_code=503, detail='Unable to verify your session. Please retry.')
 
 
 def get_user_id(request: Request) -> str:

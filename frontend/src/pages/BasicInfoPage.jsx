@@ -8,17 +8,21 @@ export default function BasicInfoPage() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ fullName: '', phone: '', occupation: '', location: '' });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const update = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
       const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) throw new Error('Your session has expired. Please sign in again.');
       if (user) {
         // Store profile info in Supabase user metadata
-        await supabase.auth.updateUser({
+        const { error: updateError } = await supabase.auth.updateUser({
           data: { 
             full_name: form.fullName, 
             phone: form.phone, 
@@ -26,6 +30,7 @@ export default function BasicInfoPage() {
             location: form.location 
           }
         });
+        if (updateError) throw updateError;
 
         // Sync with backend Neon DB
         await registerUser({
@@ -35,7 +40,7 @@ export default function BasicInfoPage() {
       }
       navigate('/connect-repo');
     } catch (err) {
-      console.error(err);
+      setError(err.response?.data?.detail || err.message);
     } finally {
       setLoading(false);
     }
@@ -65,6 +70,7 @@ export default function BasicInfoPage() {
             </div>
 
             <form onSubmit={handleSubmit} style={styles.form}>
+                {error && <p role="alert">{error}</p>}
                 <div style={styles.row}>
                     <div style={styles.inputGroup}>
                         <label style={styles.label}>PUBLIC_ALIAS</label>

@@ -6,17 +6,6 @@ import TypingTerminal from '../components/TypingTerminal';
 
 export default function HeroPage() {
   const navigate = useNavigate();
-  const { user, initialize } = useAuth();
-
-  useEffect(() => {
-    initialize();
-  }, [initialize]);
-
-  useEffect(() => {
-    if (user) {
-      navigate('/app');
-    }
-  }, [user, navigate]);
 
   return (
     <div style={styles.page}>

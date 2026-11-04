@@ -1,4 +1,5 @@
-import tools.linters as linters
+from core.repository import RepositoryInventory
+from tools.checks import run_repository_checks
 import re
 from typing import Optional
 from agents.schema import FailureRecord
@@ -8,42 +9,33 @@ from whitebox import WhiteBoxAnalyzer
 class AnalyzerAgent:
     def __init__(self):
         self.whitebox_report = None
+        self.inventory = None
+        self.check_report = None
 
     def run(self, repo_path: str, run_id: str = None):
         """Run all linters and tests, return grouped failures."""
-        failures = []
+        self.inventory = RepositoryInventory(repo_path)
         self.whitebox_report = None
         
         def _emit(msg, status="ANALYZING"):
             if run_id:
                 emit(run_id, "AnalyzerAgent", msg, status)
 
-        # 1. Syntax & Linting (Fastest)
-        _emit("Running Flake8...")
-        failures.extend(self._tag(linters.run_flake8(repo_path), "LINTING"))
-        
-        # 2. Type Checking
-        _emit("Running Mypy...")
-        failures.extend(self._tag(linters.run_mypy(repo_path), "TYPE_ERROR"))
-        
-        # 3. JS/TS Checks
-        _emit("Running ESLint...")
-        failures.extend(self._tag(linters.run_eslint(repo_path), "JS"))
-        
-        # 4. Logic & Tests (Execution required)
-        _emit("Running Pytest...")
-        failures.extend(self._tag(linters.run_pytest(repo_path), "LOGIC"))
-        
-        _emit("Running Jest...")
-        failures.extend(self._tag(linters.run_jest(repo_path), "JS"))
-
-        # 5. C++ Checks
-        _emit("Running G++ Check...")
-        failures.extend(self._tag(linters.run_gpp_check(repo_path), "SYNTAX"))
+        summary = self.inventory.summary()
+        _emit(f"Detected {summary['size']} repository: {summary['source_files']} source files, "
+              f"{summary['source_bytes']} source bytes.", "REPOSITORY_PROFILE")
+        if run_id:
+            import json
+            emit(run_id, 'AnalyzerAgent', json.dumps(summary), 'REPOSITORY_CLASSIFIED')
+        self.check_report = run_repository_checks(self.inventory, _emit)
+        failures = self.check_report['failures']
 
         _emit("Running white-box analysis...", "WHITEBOX_ANALYSIS")
         try:
-            self.whitebox_report = WhiteBoxAnalyzer(repo_path).analyze_repository()
+            if self.inventory.size == 'large':
+                raise ValueError('Repository exceeds the configured medium repository limits')
+            self.whitebox_report = WhiteBoxAnalyzer(repo_path).analyze_repository(
+                inventory=self.inventory, run_coverage=False)
             if self.whitebox_report.get("generated_tests"):
                 _emit(f"White-box analysis generated {len(self.whitebox_report['generated_tests'])} targeted tests.", "WHITEBOX_ANALYSIS")
         except Exception as exc:
@@ -70,7 +62,7 @@ class AnalyzerAgent:
     def _deduplicate(self, failures):
         seen = {}
         for f in failures:
-            key = f"{f['file']}_{f['bug_type']}"
+            key = (f['file'], f['bug_type'], f.get('line', 0), f.get('error_message', ''))
             if key not in seen:
                 seen[key] = []
             seen[key].append(f)

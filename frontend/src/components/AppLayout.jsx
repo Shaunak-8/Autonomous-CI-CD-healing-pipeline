@@ -5,11 +5,15 @@ import { useAuth } from '../hooks/useAuth';
 export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, logout } = useAuth();
+  const { user, logout, error } = useAuth();
 
   const handleLogout = async () => {
-    await logout();
-    navigate('/');
+    try {
+      await logout();
+      navigate('/', { replace: true });
+    } catch {
+      // The shared authentication error is displayed below.
+    }
   };
 
   const navItems = [
@@ -79,6 +83,7 @@ export default function AppLayout() {
 
       {/* Main Content */}
       <main style={styles.main}>
+        {error && <p role="alert">{error}</p>}
         <header style={styles.topHeader}>
             <div style={styles.statusGroup}>
                 <div style={styles.statusPulse}></div>

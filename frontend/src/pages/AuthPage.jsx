@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import { login, signUp, loginWithGitHub } from '../lib/supabase';
 import { Github, Mail, Lock, ArrowLeft, Eye, EyeOff, Terminal, Shield, Cpu, Activity } from 'lucide-react';
+import { useAuth } from '../hooks/useAuth';
+import { rememberDestination } from '../lib/authFlow';
 
 export default function AuthPage() {
-  const navigate = useNavigate();
+  const location = useLocation();
+  const authError = useAuth((s) => s.error);
   const [params] = useSearchParams();
   const [mode, setMode] = useState(params.get('mode') === 'signup' ? 'signup' : 'login');
   const [email, setEmail] = useState('');
@@ -12,18 +15,20 @@ export default function AuthPage() {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setMessage('');
     setLoading(true);
     try {
+      rememberDestination(location.state?.from || (mode === 'signup' ? '/onboarding' : '/app'));
       if (mode === 'signup') {
-        await signUp(email, password);
-        navigate('/onboarding');
+        const data = await signUp(email, password);
+        if (!data.session) setMessage('Check your email to confirm your account, then sign in.');
       } else {
         await login(email, password);
-        navigate('/app');
       }
     } catch (err) {
       setError(err.message);
@@ -33,7 +38,10 @@ export default function AuthPage() {
   };
 
   const handleGitHub = async () => {
-    try { await loginWithGitHub(); } catch (err) { setError(err.message); }
+    setError('');
+    setLoading(true);
+    rememberDestination(location.state?.from || (mode === 'signup' ? '/onboarding' : '/app'));
+    try { await loginWithGitHub(); } catch (err) { setError(err.message); setLoading(false); }
   };
 
   return (
@@ -55,7 +63,7 @@ export default function AuthPage() {
             <p style={styles.subtitle}>AUTHENTICATION_PROTOCOL_V4.0</p>
           </div>
 
-          <button style={styles.githubBtn} onClick={handleGitHub}>
+          <button style={styles.githubBtn} onClick={handleGitHub} disabled={loading}>
             <Terminal size={18} color="var(--green)" />
             <span>CONTINUE WITH GITHUB</span>
           </button>
@@ -98,7 +106,8 @@ export default function AuthPage() {
               </div>
             </div>
 
-            {error && <p style={styles.error}>{error}</p>}
+            {(error || authError) && <p role="alert" style={styles.error}>{error || authError}</p>}
+            {message && <p role="status">{message}</p>}
 
             <button type="submit" disabled={loading} style={styles.submitBtn}>
               <Activity size={18} />

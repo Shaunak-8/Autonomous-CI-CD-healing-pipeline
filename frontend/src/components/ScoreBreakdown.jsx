@@ -3,7 +3,7 @@ import { BarChart2 } from 'lucide-react';
 
 export default function ScoreBreakdown({ score }) {
   const data = [
-    { name: 'Base', value: score?.base || 100, color: '#00ff88' },
+    { name: 'Base', value: score?.base ?? 0, color: '#00ff88' },
     { name: 'Bonus', value: score?.bonus || score?.speed_bonus || 0, color: '#00ccff' },
     { name: 'Penalty', value: -(score?.penalty || score?.efficiency_penalty || 0), color: '#ff3b3b' },
     { name: 'Final', value: score?.final || score?.total || 0, color: '#a855f7' },

@@ -124,7 +124,7 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <main style={styles.main}>
+      <main style={styles.main} className="run-dashboard">
         <div style={styles.grid}>
           <div style={styles.leftCol}>
             <div style={styles.section}>
@@ -227,6 +227,10 @@ export default function DashboardPage() {
         </div>
       </main>
       <style>{`
+        .run-dashboard > div { min-width: 0; }
+        @media (max-width: 1300px) {
+          .run-dashboard > div { grid-template-columns: minmax(0, 1fr) !important; }
+        }
         .spin { animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
       `}</style>
@@ -249,10 +253,10 @@ const styles = {
   primaryBtn: { padding: '10px 20px', background: 'var(--green)', color: '#000', border: 'none', borderRadius: 2, fontWeight: 800, cursor: 'pointer', fontSize: 12, letterSpacing: 1, display: 'flex', alignItems: 'center', gap: 10 },
   secBtn: { padding: '10px 20px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 2, fontWeight: 700, cursor: 'pointer', fontSize: 12, letterSpacing: 1, display: 'flex', alignItems: 'center', gap: 10, transition: '0.3s' },
   main: { position: 'relative', zIndex: 5 },
-  grid: { display: 'grid', gridTemplateColumns: '320px 1fr 340px', gap: 32 },
-  leftCol: { display: 'flex', flexDirection: 'column', gap: 32 },
-  centerCol: { display: 'flex', flexDirection: 'column', gap: 32 },
-  rightCol: { display: 'flex', flexDirection: 'column', gap: 32 },
+  grid: { display: 'grid', gridTemplateColumns: 'minmax(0, 320px) minmax(0, 1fr) minmax(0, 340px)', gap: 32 },
+  leftCol: { display: 'flex', flexDirection: 'column', gap: 32, minWidth: 0 },
+  centerCol: { display: 'flex', flexDirection: 'column', gap: 32, minWidth: 0 },
+  rightCol: { display: 'flex', flexDirection: 'column', gap: 32, minWidth: 0 },
   section: { display: 'flex', flexDirection: 'column', gap: 20 },
   sectionHeader: { display: 'flex', alignItems: 'center', gap: 12, borderLeft: '2px solid var(--border)', paddingLeft: 16 },
   sectionTitle: { fontSize: 13, letterSpacing: 2, color: 'var(--text-secondary)', fontWeight: 800, fontFamily: "var(--font-mono)" },

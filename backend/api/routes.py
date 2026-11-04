@@ -35,6 +35,8 @@ from agents.orchestrator import OrchestratorAgent
 from tools.git_ops import clone_repo
 from tools.github_api import get_user_repositories
 from core.project_analyzer import ProjectAnalyzer
+from core.repository import RepositoryInventory
+from tools.environment import prepare_environment
 from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
@@ -47,13 +49,17 @@ RUN_ID_PATTERN = re.compile(r"^[a-f0-9\-]{1,36}$")
 
 def background_agent_run(run_id: str, repo_url: str, team_name: str, leader_name: str, branch_name: str, project_id: str = None, token: str = None):
     token_status = "present" if token else "missing"
-    print(f"🔥 BACKGROUND TASK STARTED for run_id={run_id} | Token: {token_status}")
+    logger.info('Background run %s started; GitHub token %s', run_id, token_status)
     
     db = SessionLocal()
     try:
         repo_path = os.path.join(os.getcwd(), "workspaces", f"run_{run_id}")
         emit(run_id, "GitAgent", f"Cloning repository {repo_url}...", "RUN_STARTED")
-        git_ops.clone_repo(repo_url, repo_path, token=token)
+        if not git_ops.clone_repo(repo_url, repo_path, token=token):
+            raise RuntimeError('Repository cloning did not complete. Check repository access and GitHub credentials.')
+        inventory = RepositoryInventory(repo_path)
+        if inventory.size != 'large' and os.getenv('AUTO_INSTALL_DEPENDENCIES', 'true').lower() == 'true':
+            prepare_environment(inventory, lambda message: emit(run_id, 'EnvironmentAgent', message, 'ENVIRONMENT_SETUP'))
         
         orch = OrchestratorAgent(db=db)
         result = orch.run(
@@ -67,7 +73,8 @@ def background_agent_run(run_id: str, repo_url: str, team_name: str, leader_name
         
         if project_id:
             try:
-                update_run_result(run_id, result.get("status", "COMPLETED"), result)
+                report = result.get('results') or result
+                update_run_result(run_id, report.get("status", "failed"), report)
             except Exception as e:
                 print(f"DB update error: {e}")
                 
@@ -75,6 +82,11 @@ def background_agent_run(run_id: str, repo_url: str, team_name: str, leader_name
         logger.exception("Agent run %s failed: %s", run_id, e)
         emit(run_id, "OrchestratorAgent", f"Critical Error: {str(e)}", "RUN_FAILED")
         db.rollback()
+        try:
+            crud.update_run(db, run_id=run_id, status='failed', memory={'error': str(e)})
+        except Exception:
+            db.rollback()
+            logger.exception('Could not persist failure for run %s', run_id)
     finally:
         db.close()
 
@@ -85,7 +97,7 @@ async def register_user(req: EnsureUserRequest, request: Request):
     try:
         await verify_token(request)
         user_id = get_user_id(request)
-        ensure_user(user_id, req.email, req.profile_data)
+        ensure_user(user_id, getattr(request.state, 'email', None) or req.email, req.profile_data)
         return {"status": "success", "user_id": user_id}
     except HTTPException:
         raise
@@ -130,6 +142,8 @@ async def create_new_project(req: ProjectCreate, request: Request):
     try:
         await verify_token(request)
         user_id = get_user_id(request)
+        # An existing Supabase session can outlive a cleared application database.
+        ensure_user(user_id, request.state.email)
         project = create_project(user_id, req.repo_url, req.name, req.tags, req.visibility)
         return {"project": project}
     except HTTPException:
@@ -212,12 +226,12 @@ async def run_agent(
     bg_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    user_id = None
-    try:
-        await verify_token(request)
-        user_id = get_user_id(request)
-    except Exception:
-        pass
+    await verify_token(request)
+    user_id = get_user_id(request)
+    if request_body.project_id:
+        project = get_project(request_body.project_id)
+        if not project or project['user_id'] != user_id:
+            raise HTTPException(status_code=404, detail='Project not found')
 
     # Always pick a run_id first so we can use it consistently for SSE + DB.
     run_id = str(uuid.uuid4())[:8]
@@ -267,6 +281,8 @@ def get_status(run_id: str, db: Session = Depends(get_db)):
             "team_name": db_run.team_name,
             "repo_url": db_run.repo_url,
             "created_at": str(db_run.created_at) if db_run.created_at else None,
+            "error": (db_run.memory or {}).get('error'),
+            "has_results": bool((db_run.memory or {}).get('run_id')),
         }
 
     # Fallback to file system
@@ -274,17 +290,22 @@ def get_status(run_id: str, db: Session = Depends(get_db)):
     if os.path.exists(results_path):
         with open(results_path, "r") as f:
             data = json.load(f)
-            return {"run_id": run_id, "status": "completed", "score": data.get("score", 0)}
+            return {"run_id": run_id, "status": data.get('status', 'failed'), "has_results": True, "score": data.get("score", 0)}
 
-    return {"run_id": run_id, "status": "running"}
+    raise HTTPException(status_code=404, detail='Run not found')
 
 @router.get("/results/{run_id}")
-async def get_results(run_id: str):
+def get_results(run_id: str, db: Session = Depends(get_db)):
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        raise HTTPException(status_code=400, detail='Invalid run ID')
     results_path = os.path.join("results", f"{run_id}.json")
     if os.path.exists(results_path):
         with open(results_path, "r") as f:
             return json.load(f)
-    return {"status": "not found"}
+    row = crud.get_run(db, run_id)
+    if row and row.memory and row.memory.get('run_id'):
+        return row.memory
+    raise HTTPException(status_code=404, detail='Results not available yet')
 
 # ---------------- WORKSPACE & TASKS ---------------- #
 

@@ -1,6 +1,10 @@
 import { Target, AlertTriangle, CheckCircle, Layers } from 'lucide-react';
+import { useAgentStore } from '../store/agentStore';
 
 export default function RunSummaryCard({ status, totalFailures, totalFixes, score }) {
+  const profile = useAgentStore((s) => s.repositoryProfile);
+  const analysis = useAgentStore((s) => s.analysis);
+  const push = useAgentStore((s) => s.push);
   const metrics = [
     { label: 'FAILURES', value: totalFailures, icon: <AlertTriangle size={14} />, color: '#ff3b3b' },
     { label: 'FIXES', value: totalFixes, icon: <CheckCircle size={14} />, color: '#00ff88' },
@@ -10,6 +14,30 @@ export default function RunSummaryCard({ status, totalFailures, totalFixes, scor
   return (
     <div style={styles.card}>
       <h3 style={styles.title}><Layers size={14} color="#a855f7" /> RUN SUMMARY</h3>
+      {profile && (
+        <p style={{ color: '#aaa', fontSize: 12 }}>
+          {profile.size.toUpperCase()} REPOSITORY · {profile.source_files.toLocaleString()} source files
+          {' · '}{(profile.source_bytes / 1024 / 1024).toFixed(1)} MB
+        </p>
+      )}
+      {analysis && !analysis.complete && (
+        <p role="status" style={{ color: '#ffb347', fontSize: 12 }}>
+          Analysis incomplete. {analysis.reason} Changes were not pushed.
+        </p>
+      )}
+      {analysis?.ai && !analysis.ai.ready && <p role="alert" style={{ color: '#ffb347', fontSize: 12 }}>{analysis.ai.reason}</p>}
+      {push && (
+        <p role={push.status === 'failed' ? 'alert' : 'status'} style={{ color: push.status === 'success' ? '#00ff88' : '#ffb347', fontSize: 12, overflowWrap: 'anywhere' }}>
+          {push.status === 'success' ? <>Pushed to new branch: {push.branch_url ? <a href={push.branch_url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>{push.branch}</a> : push.branch}</> :
+            `Push ${push.status}: ${push.error || push.reason || 'No source changes to commit.'}`}
+        </p>
+      )}
+      {analysis?.checks?.filter((check) => check.status !== 'passed').map((check) => (
+        <details key={`${check.root}:${check.name}`} style={{ color: '#ffb347', fontSize: 12, marginBottom: 8 }}>
+          <summary>{check.root}: {check.name} — {check.status}</summary>
+          <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{check.output}</pre>
+        </details>
+      ))}
       <div style={styles.grid}>
         {metrics.map((m, i) => (
           <div key={i} style={styles.metricBox}>

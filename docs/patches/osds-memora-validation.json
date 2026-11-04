@@ -1,0 +1,37 @@
+{
+  "complete": true,
+  "passed": true,
+  "findings": 0,
+  "checks": [
+    {
+      "name": "flake8",
+      "status": "passed",
+      "output": "\n"
+    },
+    {
+      "name": "mypy",
+      "status": "passed",
+      "output": "Success: no issues found in 38 source files\r\n\n"
+    },
+    {
+      "name": "pytest",
+      "status": "passed",
+      "output": "` with `starlette.testclient` is deprecated; install `httpx2` instead.\r\n    from starlette.testclient import TestClient as TestClient  # noqa\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n26 passed, 1 warning in 5.15s\r\n\n"
+    },
+    {
+      "name": "npm:lint",
+      "status": "passed",
+      "output": "eline\\\\backend\\\\workspaces\\\\verification_osds_20261104\\\\frontend\\\\src\\\\vite-env.d.ts\",\"messages\":[],\"suppressedMessages\":[],\"errorCount\":0,\"fatalErrorCount\":0,\"warningCount\":0,\"fixableErrorCount\":0,\"fixableWarningCount\":0,\"usedDeprecatedRules\":[]}]\n\n"
+    },
+    {
+      "name": "npm:test",
+      "status": "passed",
+      "output": "n_osds_20261104/frontend\n\n \u2713 src/test/store.test.ts (1 test) 2ms\n\n Test Files  1 passed (1)\n      Tests  1 passed (1)\n   Start at  14:54:21\n   Duration  1.87s (transform 36ms, setup 195ms, collect 25ms, tests 2ms, environment 1.17s, prepare 151ms)\n\n\n"
+    },
+    {
+      "name": "npm:build",
+      "status": "passed",
+      "output": "mic import() to code-split the application\n- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks\n- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.\n"
+    }
+  ]
+}

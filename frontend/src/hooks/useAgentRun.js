@@ -16,6 +16,7 @@ export const useAgentRun = () => {
         if (!repoUrl) return;
 
         reset();
+        useAgentStore.getState().setRepoUrl(repoUrl);
         setStatus('running');
         setStartTime(new Date().toISOString());
 
@@ -28,7 +29,11 @@ export const useAgentRun = () => {
             });
             setRunId(result.run_id);
         } catch (error) {
-            console.error('Failed to start run', error);
+            useAgentStore.getState().appendThought({
+                agent: 'RunAgent', type: 'RUN_FAILED',
+                message: error.response?.data?.detail || error.message || 'Unable to start the run.',
+                timestamp: new Date().toISOString(),
+            });
             setStatus('failed');
         }
     }, [projectId, repoUrl, teamName, leaderName, reset, setStatus, setStartTime, setRunId]);

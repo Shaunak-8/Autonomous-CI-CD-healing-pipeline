@@ -6,13 +6,15 @@ from api.enums import IterationStatusEnum, parse_iteration_status
 class ReporterAgent:
     def build_results(self, run_id: str, repo_url: str, final_status: str, iterations: int, 
                       failures_log: list, fixes: list, 
-                      health_score: dict = None, causal_graph: dict = None, branch_name: str = "main", whitebox: dict = None) -> dict:
+                      health_score: dict = None, causal_graph: dict = None, branch_name: str = "main", whitebox: dict = None,
+                      repository_profile: dict = None, check_report: dict = None, push_result: dict = None,
+                      deferred_failures: int = 0) -> dict:
         total_failures = len(failures_log)
         total_fixes = len([f for f in fixes if f.get("status") == "applied"])
         
         it_status = parse_iteration_status(final_status)
         # Calculate scores
-        base_score = 100
+        base_score = 100 if it_status == IterationStatusEnum.passed else 0
         bonus = 10 if it_status == IterationStatusEnum.passed and iterations < 3 else 0
         penalty = (iterations - 1) * 5 if iterations > 1 else 0
         final_score = max(0, base_score + bonus - penalty)
@@ -46,6 +48,10 @@ class ReporterAgent:
             "fixes": fixes,
             "branch": branch_name,
             "whitebox": whitebox_payload,
+            "repository_profile": repository_profile,
+            "analysis": check_report,
+            "push": push_result,
+            "deferred_failures": deferred_failures,
             "timestamp": datetime.utcnow().isoformat()
         }
         

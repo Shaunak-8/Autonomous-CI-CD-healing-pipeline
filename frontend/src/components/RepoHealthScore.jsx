@@ -1,20 +1,20 @@
 import { Heart } from 'lucide-react';
 
 export default function RepoHealthScore({ healthScore }) {
-  const before = healthScore?.before || 0;
-  const after = healthScore?.after || 0;
-  const improvement = after - before;
+  const before = healthScore?.before;
+  const after = healthScore?.after;
+  const improvement = before != null && after != null ? after - before : 0;
 
   return (
     <div style={styles.card}>
       <h3 style={styles.title}><Heart size={14} color="#ff3b3b" /> REPO HEALTH</h3>
       <div style={styles.gaugeWrap}>
         <div style={styles.gaugeTrack}>
-          <div style={{ ...styles.gaugeFill, width: `${after}%` }}></div>
+          <div style={{ ...styles.gaugeFill, width: `${after ?? 0}%` }}></div>
         </div>
         <div style={styles.labels}>
-          <span style={styles.before}>Before: {before}%</span>
-          <span style={styles.after}>After: {after}%</span>
+          <span style={styles.before}>Before: {before != null ? `${before}%` : 'Unverified'}</span>
+          <span style={styles.after}>After: {after != null ? `${after}%` : 'Unverified'}</span>
         </div>
         {improvement > 0 && (
           <div style={styles.improvement}>+{improvement}% improvement</div>

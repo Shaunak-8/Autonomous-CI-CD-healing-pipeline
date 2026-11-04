@@ -15,20 +15,20 @@ import RepoVisualizerPage from './pages/RepoVisualizerPage';
 import InfrastructurePage from './pages/InfrastructurePage';
 import { useAuth } from './hooks/useAuth';
 import MatrixBackground from './components/MatrixBackground';
+import RequireAuth from './components/RequireAuth';
+import AuthCallbackPage from './pages/AuthCallbackPage';
+import { consumeDestination } from './lib/authFlow';
 
 function OAuthReturnRedirect() {
   const session = useAuth((s) => s.session);
+  const loading = useAuth((s) => s.loading);
   const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!session || location.pathname !== '/') return;
-    const destination = sessionStorage.getItem('mclovin_auth_redirect');
-    if (destination) {
-      sessionStorage.removeItem('mclovin_auth_redirect');
-      navigate(destination, { replace: true });
-    }
-  }, [location.pathname, navigate, session]);
+    if (loading || !session || !['/', '/auth', '/auth/callback'].includes(location.pathname)) return;
+    navigate(consumeDestination(), { replace: true });
+  }, [loading, location.pathname, navigate, session]);
 
   return null;
 }
@@ -48,12 +48,13 @@ function App() {
         {/* Onboarding Flow */}
         <Route path="/" element={<HeroPage />} />
         <Route path="/auth" element={<AuthPage />} />
-        <Route path="/onboarding" element={<BasicInfoPage />} />
-        <Route path="/connect-repo" element={<ConnectRepoPage />} />
-        <Route path="/invite" element={<InviteCollabPage />} />
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
+        <Route path="/onboarding" element={<RequireAuth><BasicInfoPage /></RequireAuth>} />
+        <Route path="/connect-repo" element={<RequireAuth><ConnectRepoPage /></RequireAuth>} />
+        <Route path="/invite" element={<RequireAuth><InviteCollabPage /></RequireAuth>} />
         
         {/* Protected App Layout */}
-        <Route path="/app" element={<AppLayout />}>
+        <Route path="/app" element={<RequireAuth><AppLayout /></RequireAuth>}>
           <Route index element={<GlobalDashboardPage />} />
           <Route path="projects" element={<ProjectsPage />} />
           <Route path="project/:id" element={<DashboardPage />} />

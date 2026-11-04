@@ -14,7 +14,7 @@ def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         raise ValueError("DATABASE_URL not set in .env")
-    return psycopg2.connect(db_url)
+    return psycopg2.connect(db_url, connect_timeout=10)
 
 
 def _resolve_pg_enum_value(conn, enum_type_name: str, desired_value: str, fallback_value: str | None = None) -> str:
@@ -59,7 +59,8 @@ def ensure_user(user_id: str, email: str, profile_data: dict = None):
         user = db.query(User).filter(User.id == user_id).first()
         if user:
             user.email = email
-            user.profile_data = profile_data or {}
+            if profile_data:
+                user.profile_data = profile_data
         else:
             db.add(User(id=user_id, email=email, profile_data=profile_data or {}))
         db.commit()

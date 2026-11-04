@@ -1,0 +1,170 @@
+diff --git a/backend/app/adaptive/controller.py b/backend/app/adaptive/controller.py
+index 545450b..ce7a4b0 100644
+--- a/backend/app/adaptive/controller.py
++++ b/backend/app/adaptive/controller.py
+@@ -64,9 +64,9 @@ class AdaptivePagingController:
+                 prev = self.active_strategy
+                 self.active_strategy = "LRU"
+                 self.steps_since_switch = 0
+-                reason = f"Warmup phase (< 5 references). Reverted from {prev} to LRU baseline."
+-                self._record_switch(step_idx, prev, "LRU", reason)
+-                return "LRU", reason
++                warmup_reason = f"Warmup phase (< 5 references). Reverted from {prev} to LRU baseline."
++                self._record_switch(step_idx, prev, "LRU", warmup_reason)
++                return "LRU", warmup_reason
+             return "LRU", None
+ 
+         # Calculate rolling fault rate
+@@ -88,7 +88,7 @@ class AdaptivePagingController:
+ 
+         prev_strategy = self.active_strategy
+         new_strategy = prev_strategy
+-        reason = None
++        reason: Optional[str] = None
+ 
+         # Decision Policy:
+         # 1. If LSTM is trained with high confidence and recent accuracy is good, prefer LSTM
+diff --git a/backend/app/api/advanced.py b/backend/app/api/advanced.py
+index 8a7e72d..fb02b82 100644
+--- a/backend/app/api/advanced.py
++++ b/backend/app/api/advanced.py
+@@ -14,7 +14,9 @@ router = APIRouter(prefix="/api", tags=["optimization", "traces"])
+ @router.post("/traces/upload", response_model=TraceUploadResponse)
+ def upload_trace(req: TraceUploadRequest):
+     try:
+-        sequences, operations, timestamps = {}, {}, {}
++        sequences: dict[str, list[int]] = {}
++        operations: dict[str, list[AccessType]] = {}
++        timestamps: dict[str, list[float]] = {}
+         if req.format == "json":
+             payload = json.loads(req.content)
+             rows = payload if isinstance(payload, list) else payload.get("references", [])
+@@ -35,7 +37,7 @@ def upload_trace(req: TraceUploadRequest):
+             sequences.setdefault(pid, []).append(page)
+             operations.setdefault(pid, []).append(op)
+             timestamps.setdefault(pid, []).append(float(row.get("timestamp", index)))
+-        total = sum(map(len, sequences.values()))
++        total = sum(len(v) for v in sequences.values())
+         if not total:
+             raise ValueError("Trace contains no references")
+         return TraceUploadResponse(sequences=sequences, operations=operations, timestamps=timestamps, total_references=total)
+diff --git a/backend/app/api/sessions.py b/backend/app/api/sessions.py
+index 45f2934..fb8b1a7 100644
+--- a/backend/app/api/sessions.py
++++ b/backend/app/api/sessions.py
+@@ -7,13 +7,13 @@ from threading import RLock
+ from typing import Dict
+ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+ from app.models.schemas import SimulationSessionCreate, SimulationSessionState
+-from app.simulation.engine import run_simulation
++from app.simulation.engine import run_simulation, SimulationResult
+ 
+ router = APIRouter(tags=["live simulations"])
+ 
+ @dataclass
+ class Session:
+-    result: object
++    result: SimulationResult
+     cursor: int = 0
+     status: str = "paused"
+ 
+diff --git a/backend/app/multiprocess/allocator.py b/backend/app/multiprocess/allocator.py
+index 7f4d7ef..09ff40f 100644
+--- a/backend/app/multiprocess/allocator.py
++++ b/backend/app/multiprocess/allocator.py
+@@ -71,9 +71,10 @@ class SimulatedProcessState:
+             else:
+                 # Local LRU eviction within this process's allocated partition
+                 if self.frames:
+-                    victim = min(self.frames, key=lambda p: self.last_used.get(p, -1))
++                    victim = min(self.frames, key=lambda p: self.last_used.get(p if p is not None else -1, -1))
+                     v_idx = self.frames.index(victim)
+-                    del self.last_used[victim]
++                    if victim is not None:
++                        del self.last_used[victim]
+                     self.frames[v_idx] = page
+                     self.last_used[page] = step_idx
+ 
+@@ -95,9 +96,9 @@ class SimulatedProcessState:
+                     self.frames.remove(None)
+                 else:
+                     # Evict LRU page
+-                    victim = min(self.frames, key=lambda p: self.last_used.get(p, -1))
++                    victim = min(self.frames, key=lambda p: self.last_used.get(p if p is not None else -1, -1))
+                     self.frames.remove(victim)
+-                    if victim in self.last_used:
++                    if victim is not None and victim in self.last_used:
+                         del self.last_used[victim]
+ 
+ 
+diff --git a/backend/app/simulation/engine.py b/backend/app/simulation/engine.py
+index cd600f1..94b8e53 100644
+--- a/backend/app/simulation/engine.py
++++ b/backend/app/simulation/engine.py
+@@ -32,6 +32,7 @@ def run_simulation(
+     if lstm_predictor is None:
+         lstm_predictor = LSTMPredictor()
+ 
++    sim: FIFOSimulator | LRUSimulator | OptimalSimulator
+     if algo == AlgorithmType.FIFO:
+         sim = FIFOSimulator(num_frames)
+         trace = [sim.step(i, page) for i, page in enumerate(sequence)]
+@@ -418,13 +419,13 @@ def _run_adaptive_simulation(
+                 "switch_reason": switch_reason
+             }
+         elif active_strat == "LSTM":
+-            p_res = lstm_predictor.predict_next(history)
+-            last_prediction = p_res.get("predicted_next_page")
++            lstm_result = lstm_predictor.predict_next(history)
++            last_prediction = lstm_result.get("predicted_next_page")
+             last_pred_info = {
+                 "strategy": active_strat,
+                 "predicted_next": last_prediction,
+-                "confidence": p_res.get("confidence", 0.0),
+-                "top_candidates": p_res.get("top_candidates", []),
++                "confidence": lstm_result.get("confidence", 0.0),
++                "top_candidates": lstm_result.get("top_candidates", []),
+                 "switch_reason": switch_reason
+             }
+         else:
+diff --git a/backend/app/simulation/lru.py b/backend/app/simulation/lru.py
+index 0bdcec4..32a24e1 100644
+--- a/backend/app/simulation/lru.py
++++ b/backend/app/simulation/lru.py
+@@ -45,6 +45,7 @@ class LRUSimulator:
+             else:
+                 # Find page among current frames with minimum last_used timestamp
+                 victim = min(self.frames, key=lambda p: self.last_used[p] if p is not None else -1)
++                assert victim is not None
+                 victim_last_time = self.last_used[victim]
+                 frame_idx = self.frames.index(victim)
+ 
+diff --git a/backend/app/simulation/optimal.py b/backend/app/simulation/optimal.py
+index 4e3e103..7fb3a88 100644
+--- a/backend/app/simulation/optimal.py
++++ b/backend/app/simulation/optimal.py
+@@ -40,13 +40,14 @@ class OptimalSimulator:
+                 future_refs = self.full_sequence[step_idx + 1:]
+                 
+                 # For each resident page, find index of its next occurrence in future_refs
+-                farthest_distance = -1
++                farthest_distance: float = -1.0
+                 victim = None
+                 victim_next_use_str = ""
+ 
+                 for resident in self.frames:
+                     if resident is None:
+                         continue
++                    distance: float
+                     try:
+                         next_idx = future_refs.index(resident)
+                         distance = next_idx + 1
+@@ -55,7 +56,7 @@ class OptimalSimulator:
+                         distance = float('inf')
+ 
+                     if distance > farthest_distance:
+-                        farthest_distance = distance
++                        farthest_distance = float(distance)
+                         victim = resident
+                         if distance == float('inf'):
+                             victim_next_use_str = "never again"

@@ -2,6 +2,7 @@ import os
 import ast
 import re
 from typing import List, Dict
+from core.repository import RepositoryInventory, safe_path
 
 class ProjectAnalyzer:
     def __init__(self, repo_path: str):
@@ -12,21 +13,17 @@ class ProjectAnalyzer:
         self.supported_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".c", ".cpp", ".h", ".hpp"}
 
     def _get_files(self) -> List[str]:
-        all_files = []
-        for root, dirs, files in os.walk(self.repo_path):
-            dirs[:] = [d for d in dirs if d not in self.ignored_dirs]
-            for file in files:
-                if any(file.endswith(ext) for ext in self.supported_exts):
-                    rel_path = os.path.relpath(os.path.join(root, file), self.repo_path)
-                    all_files.append(rel_path)
-        return all_files
+        self.inventory = RepositoryInventory(self.repo_path)
+        if self.inventory.size == 'large':
+            return []
+        return self.inventory.source_files()
 
     def _extract_imports(self, rel_path: str) -> List[str]:
         full_path = os.path.join(self.repo_path, rel_path)
         imports = []
         try:
             with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
+                content = f.read(self.inventory.policy.max_file_bytes + 1)
 
             if rel_path.endswith(".py"):
                 tree = ast.parse(content)
@@ -36,7 +33,7 @@ class ProjectAnalyzer:
                             imports.append(alias.name)
                     elif isinstance(node, ast.ImportFrom):
                         if node.module:
-                            imports.append(node.module)
+                            imports.append('.' * node.level + node.module)
             
             elif rel_path.endswith((".js", ".jsx", ".ts", ".tsx")):
                 # Regex for JS/TS imports
@@ -61,6 +58,11 @@ class ProjectAnalyzer:
     def analyze(self) -> Dict:
         files = self._get_files()
         file_set = set(files)
+        suffix_index = {}
+        for path in files:
+            parts = path.split('/')
+            for index in range(len(parts)):
+                suffix_index.setdefault('/'.join(parts[index:]), []).append(path)
         
         # Map basenames for easier matching
         basename_map = {}
@@ -84,22 +86,32 @@ class ProjectAnalyzer:
                 if imp in file_set:
                     target = imp
                 else:
-                    # 2. Try matching by submodule path (e.g., api.db -> api/db.py)
-                    parts = imp.split(".")
-                    # Try suffixes
-                    for suffix in [".py", ".js", ".js", ".cpp", ".c", ".h"]:
-                        candidate = "/".join(parts) + suffix
-                        # Try to find a file that ends with this candidate
-                        for f_path in file_set:
-                            if f_path.endswith(candidate):
-                                target = f_path
-                                break
-                        if target: break
+                    # Resolve local paths first, then use indexed unambiguous suffixes.
+                    if f.endswith('.py'):
+                        depth = len(imp) - len(imp.lstrip('.'))
+                        base = os.path.dirname(f)
+                        for _ in range(max(0, depth - 1)):
+                            base = os.path.dirname(base)
+                        module = imp.lstrip('.').replace('.', '/')
+                        candidate = os.path.join(base, module) if depth else module
+                    else:
+                        candidate = os.path.join(os.path.dirname(f), imp) if imp.startswith('.') else imp
+                    candidate = os.path.normpath(candidate).replace('\\', '/')
+                    suffixes = ['', '.py', '/__init__.py', '.js', '.jsx', '.ts', '.tsx', '/index.js', '/index.ts', '/index.tsx', '.cpp', '.c', '.h']
+                    for suffix in suffixes:
+                        key = candidate + suffix
+                        if key in file_set:
+                            target = key
+                            break
+                        matches = suffix_index.get(key, [])
+                        if len(matches) == 1:
+                            target = matches[0]
+                            break
                     
                     if not target:
                         # 3. Last fallback: Basename match
-                        bn = parts[-1]
-                        if bn in basename_map:
+                        bn = os.path.splitext(imp.replace('\\', '/').split('/')[-1])[0]
+                        if bn in basename_map and len(basename_map[bn]) == 1:
                             target = basename_map[bn][0]
                 
                 if target and target != f:
@@ -121,4 +133,4 @@ class ProjectAnalyzer:
                 "risk_score": score
             })
 
-        return {"nodes": nodes, "edges": edges}
+        return {"nodes": nodes, "edges": edges, 'repository_profile': self.inventory.summary()}

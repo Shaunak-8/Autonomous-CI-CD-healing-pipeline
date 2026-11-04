@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { loginWithGitHub, signUp, login } from '../lib/supabase';
+import { rememberDestination } from '../lib/authFlow';
 
 export default function AuthModal({ onClose }) {
   const [mode, setMode] = useState('login');
@@ -7,6 +8,7 @@ export default function AuthModal({ onClose }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -14,7 +16,12 @@ export default function AuthModal({ onClose }) {
     setLoading(true);
     try {
       if (mode === 'signup') {
-        await signUp(email, password);
+        rememberDestination('/onboarding');
+        const data = await signUp(email, password);
+        if (!data.session) {
+          setMessage('Check your email to confirm your account, then sign in.');
+          return;
+        }
       } else {
         await login(email, password);
       }
@@ -28,6 +35,7 @@ export default function AuthModal({ onClose }) {
 
   const handleGitHub = async () => {
     setError('');
+    rememberDestination(mode === 'signup' ? '/onboarding' : '/app');
     try {
       await loginWithGitHub();
     } catch (err) {
@@ -74,6 +82,7 @@ export default function AuthModal({ onClose }) {
             required
           />
           {error && <p style={styles.error}>{error}</p>}
+          {message && <p role="status">{message}</p>}
           <button type="submit" style={styles.submitBtn} disabled={loading}>
             {loading ? 'PROCESSING...' : mode === 'login' ? 'SIGN IN' : 'SIGN UP'}
           </button>

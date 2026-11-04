@@ -31,7 +31,7 @@ class InfraConfig(BaseModel):
 
 def get_instructor_client():
     gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key and gemini_key != "your_gemini_api_key_here":
+    if gemini_key and gemini_key != "your_gemini_api_key_here" and (config.LLM_PRIMARY_PROVIDER == 'gemini' or not os.getenv('GROQ_API_KEY')):
         genai.configure(api_key=gemini_key)
         model_name = config.GEMINI_MODEL
         client = genai.GenerativeModel(model_name)

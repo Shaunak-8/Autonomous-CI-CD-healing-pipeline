@@ -10,7 +10,7 @@ export default function CommandCenter() {
   const logEndRef = useRef(null);
 
   useEffect(() => {
-    const streamBase = import.meta.env.VITE_API_URL || window.location.origin;
+    const streamBase = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/+$/, '');
     const eventSource = new EventSource(`${streamBase}/stream/global`);
     
     eventSource.onmessage = (event) => {

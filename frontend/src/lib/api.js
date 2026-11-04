@@ -1,14 +1,7 @@
 import axios from 'axios';
-import { getAccessToken, supabase } from './supabase';
+import { getAccessToken, getGitHubToken } from './supabase';
 
-const getGitHubToken = async () => {
-  if (!supabase) return null;
-  const { data } = await supabase.auth.getSession();
-  const session = data?.session;
-  return session?.provider_token || session?.provider_access_token || null;
-};
-
-const baseUrl = import.meta.env.VITE_API_URL || '';
+const baseUrl = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
 const api = axios.create({
   baseURL: baseUrl ? `${baseUrl}/api` : '/api',
@@ -22,7 +15,7 @@ api.interceptors.request.use(async (config) => {
     config.headers.Authorization = `Bearer ${token}`;
   }
   const ghToken = await getGitHubToken();
-  if (ghToken) {
+  if (ghToken && !config.headers['X-GitHub-Token']) {
     config.headers['X-GitHub-Token'] = ghToken;
   }
   return config;
@@ -43,8 +36,8 @@ export const getStatus = async (runId) => {
   return response.data;
 };
 
-export const getRepos = async () => {
-    const response = await api.get('/repos');
+export const getRepos = async (token) => {
+    const response = await api.get('/repos', token ? { headers: { 'X-GitHub-Token': token } } : {});
     return response.data;
 };
 
