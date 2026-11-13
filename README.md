@@ -199,3 +199,10 @@ The **Autonomous CI/CD Healing Agent** demonstrates how AI can move beyond code 
 
 By combining **AI, DevOps automation, and intelligent testing**, this project turns broken pipelines into **self-healing development workflows**.
 
+
+
+## Multi-model batching scaffold
+
+The backend includes a provider-neutral batch coordinator in `backend/core/multimodel.py`. It accepts injected model clients, runs candidate generation concurrently, records per-model timing and failures, groups matching outputs, and selects a winner using weighted agreement and the configured primary provider. Provider credentials are supplied through `backend/.env`; never commit real keys. `LLM_BATCH_SIZE` controls candidate fan-out from 1 to 8.
+
+The fixer assigns each issue to one ready credential. The system accepts at most five API keys total across Groq and Gemini, and each key can be assigned at most 10 issues per run, for a maximum of 50. `LLM_PRIMARY_PROVIDER` determines which provider's keys are counted first when more than five are configured. Keys can be set in numbered variables (`GROQ_API_KEY`, `GROQ_API_KEY_1` through `_5`; similarly for Gemini) or comma-separated lists. A run stops assigning work when its allowance is exhausted.

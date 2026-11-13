@@ -22,6 +22,7 @@ from core.context_builder import ContextBuilder
 from core.repository import safe_path
 from core.llm_status import check_groq
 from core.gemini_client import GeminiModel
+from core.multimodel import IssueKeyPool, IssueKeySlot
 
 from api.enums import parse_iteration_status, IterationStatusEnum, sanitize_result, normalize_status
 from api.sse import emit
@@ -83,18 +84,22 @@ class OrchestratorAgent:
     def __init__(self, db: Session = None, publish: bool = True):
         self.db = db
         self.publish = publish
-        api_key = os.getenv("GROQ_API_KEY")
         # Allow the agent to run in "analysis-only" mode when Groq isn't configured.
         # Fix generation will gracefully no-op in that case.
-        self.groq_client = Groq(api_key=config.GROQ_API_KEY, timeout=60, max_retries=0) if config.GROQ_API_KEY else None
+        self.groq_clients = [
+            (f"groq-{index + 1}", Groq(api_key=key, timeout=60, max_retries=0))
+            for index, key in enumerate(config.GROQ_API_KEYS)
+        ]
+        self.groq_client = self.groq_clients[0][1] if self.groq_clients else None
         self.ai_status = None
         
         # Gemini Support
-        gemini_key = config.GEMINI_API_KEY
-        if gemini_key and gemini_key != "your_gemini_api_key_here":
-            self.gemini_model = GeminiModel(gemini_key, config.GEMINI_MODEL)
-        else:
-            self.gemini_model = None
+        self.gemini_models = [
+            (f"gemini-{index + 1}", GeminiModel(key, config.GEMINI_MODEL))
+            for index, key in enumerate(config.GEMINI_API_KEYS)
+            if key != "your_gemini_api_key_here"
+        ]
+        self.gemini_model = self.gemini_models[0][1] if self.gemini_models else None
 
         self.analyzer = AnalyzerAgent()
         self.router = FixerRouter()
@@ -105,6 +110,7 @@ class OrchestratorAgent:
         self.dep_graph = DependencyGraph()
         self.ledger = FailureLedger()
         self.context_builder = ContextBuilder()
+        self._issue_key_pool = None
 
         
         workflow = StateGraph(AgentState)
@@ -195,13 +201,35 @@ class OrchestratorAgent:
         self._batch_backups = {}
         self._batch_entries = []
         if getattr(self, 'ai_status', None) is None:
-            groq_status = check_groq(self.groq_client, config.GROQ_MODEL)
-            gemini_status = self.gemini_model.readiness() if self.gemini_model else None
+            groq_statuses = [check_groq(client, config.GROQ_MODEL) for _, client in self.groq_clients]
+            ready_groq = [(key_id, client) for (key_id, client), status in zip(self.groq_clients, groq_statuses)
+                          if status.get('ready')]
+            groq_status = next((status for status in groq_statuses if status.get('ready')),
+                               groq_statuses[0] if groq_statuses else check_groq(None, config.GROQ_MODEL))
+            gemini_statuses = [(key_id, model.readiness()) for key_id, model in self.gemini_models]
+            ready_gemini = [(key_id, model) for (key_id, model), (_, status) in
+                            zip(self.gemini_models, gemini_statuses) if status.get('ready')]
+            gemini_status = next((status for _, status in gemini_statuses if status.get('ready')),
+                                 gemini_statuses[0][1] if gemini_statuses else None)
+            provider_slots = {
+                'groq': [IssueKeySlot(key_id, client, 'groq', config.GROQ_MODEL)
+                         for key_id, client in ready_groq],
+                'gemini': [IssueKeySlot(key_id, model, 'gemini', config.GEMINI_MODEL)
+                           for key_id, model in ready_gemini],
+            }
+            first_provider = config.LLM_PRIMARY_PROVIDER if config.LLM_PRIMARY_PROVIDER in provider_slots else 'groq'
+            second_provider = 'gemini' if first_provider == 'groq' else 'groq'
+            self._ready_issue_slots = provider_slots[first_provider] + provider_slots[second_provider]
+            self._issue_key_pool = IssueKeyPool(
+                self._ready_issue_slots, per_key_limit=config.LLM_ISSUES_PER_KEY,
+                run_limit=config.LLM_RUN_ISSUE_LIMIT)
             statuses = [gemini_status, groq_status] if config.LLM_PRIMARY_PROVIDER == 'gemini' else [groq_status, gemini_status]
             self.ai_status = next((s for s in statuses if s and s['ready']), None)
             if self.ai_status is None:
                 self.ai_status = {**groq_status, 'reason': ' '.join(s['reason'] for s in statuses if s)}
             self.ai_status['available_providers'] = [s['provider'] for s in statuses if s and s['ready']]
+            self.ai_status['available_groq_keys'] = len(ready_groq)
+            self.ai_status['available_gemini_keys'] = len(ready_gemini)
             emit(run_id, 'OrchestratorAgent',
                  f"AI selected: {self.ai_status['provider']}. Available providers: {', '.join(self.ai_status['available_providers']) or 'none'}.",
                  'AI_PROVIDER_SELECTED')
@@ -241,20 +269,31 @@ class OrchestratorAgent:
             if self.ledger.was_tried(file_key, strategy):
                 emit(run_id, "MemoryAgent", f"Skipping {file_key} — strategy already tried.", "FIX_ROUTED")
                 continue
-            if attempted >= batch_size:
+            if attempted >= min(batch_size, config.LLM_RUN_ISSUE_LIMIT):
                 break
             if bug_type == 'LOGIC' and (os.path.basename(file_key).startswith('test_') or 'tests' in file_key.replace('\\', '/').split('/')):
                 self.ledger.add_attempt(file_key, strategy, 'validation_only')
                 emit(run_id, 'ValidatorAgent', f'Keeping {file_key} unchanged; test failures require a source-code fix.', 'FIX_ROUTED')
                 continue
             attempted += 1
+
+            key_slot = self._issue_key_pool.claim() if self._issue_key_pool else None
+            if key_slot is None:
+                state['ai'] = {**self.ai_status, 'ready': False,
+                               'reason': 'Configured API key issue allowances are exhausted for this run.'}
+                emit(run_id, 'OrchestratorAgent',
+                     f"Issue allowance exhausted ({config.LLM_RUN_ISSUE_LIMIT} issues/run; {config.LLM_ISSUES_PER_KEY} per key).",
+                     'ISSUE_LIMIT_REACHED')
+                break
             
             try:
                 emit(run_id, "OrchestratorAgent", f"Routing {bug_type} fix for {file_key}...", "FIX_ROUTED")
                 
                 AgentClass = self.router.route(bug_type, file_path=file_key)
-                agent = AgentClass(self.groq_client, self.context_builder, gemini_model=self.gemini_model)
-                agent.primary_provider = self.ai_status.get('provider', 'groq')
+                agent = AgentClass(key_slot.client if key_slot.provider == 'groq' else None,
+                                   self.context_builder,
+                                   gemini_model=key_slot.client if key_slot.provider == 'gemini' else None)
+                agent.primary_provider = key_slot.provider
                 agent.on_progress = lambda message: emit(run_id, 'FixerAgent', message, 'AI_RETRY')
                 
                 # Memory history
@@ -513,4 +552,10 @@ class OrchestratorAgent:
             "token": token
         }
 
+        # Reset quotas for this run while keeping readiness-checked credentials.
+        self._issue_key_pool = IssueKeyPool(
+            getattr(self, '_ready_issue_slots', []),
+            per_key_limit=config.LLM_ISSUES_PER_KEY,
+            run_limit=config.LLM_RUN_ISSUE_LIMIT,
+        )
         return self.app.invoke(initial_state, config={'recursion_limit': max_retries * 4 + 10})
