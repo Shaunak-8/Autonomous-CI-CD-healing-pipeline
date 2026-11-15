@@ -8,8 +8,11 @@ import { FolderGit2, Calendar, GitCommit, AlertTriangle, Plus, Loader } from 'lu
 export default function ProjectsPage() {
   const navigate = useNavigate();
   const { session, loading: authLoading } = useAuth();
+  const accessToken = session?.access_token;
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
   
   const setProjectId = useAgentStore(s => s.setProjectId);
   const setRepoUrl = useAgentStore(s => s.setRepoUrl);
@@ -20,22 +23,35 @@ export default function ProjectsPage() {
       return;
     }
 
+    let active = true;
+    let timeoutId;
     async function fetchProjects() {
-      if (!session?.access_token) {
-        setLoading(false);
+      if (!accessToken) {
+        if (active) setLoading(false);
         return;
       }
+      setLoading(true);
+      setLoadError('');
       try {
-        const data = await getProjects();
-        setProjects(data.projects || []);
+        const timeout = new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('Loading projects timed out. Check your connection and try again.')), 15000);
+        });
+        const data = await Promise.race([getProjects(), timeout]);
+        if (active) setProjects(data.projects || []);
       } catch (e) {
         console.error(e);
+        if (active) setLoadError(e.response?.data?.detail || e.message || 'Unable to load projects. Please try again.');
       } finally {
-        setLoading(false);
+        clearTimeout(timeoutId);
+        if (active) setLoading(false);
       }
     }
     fetchProjects();
-  }, [session, authLoading]);
+    return () => {
+      active = false;
+      clearTimeout(timeoutId);
+    };
+  }, [accessToken, authLoading, retryCount]);
 
   const handleOpenProject = (p) => {
     reset();
@@ -58,6 +74,12 @@ export default function ProjectsPage() {
 
       {loading ? (
         <div style={styles.center}><Loader size={24} className="spin" color="#00ff88" /></div>
+      ) : loadError ? (
+        <div style={styles.empty} role="alert">
+          <AlertTriangle size={32} color="#ffaa00" />
+          <p>{loadError}</p>
+          <button style={styles.newBtn} onClick={() => setRetryCount((count) => count + 1)}>Retry</button>
+        </div>
       ) : projects.length === 0 ? (
         <div style={styles.empty}>
           <FolderGit2 size={48} color="#333" />

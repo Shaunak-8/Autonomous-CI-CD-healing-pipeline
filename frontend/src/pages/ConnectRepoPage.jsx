@@ -10,6 +10,7 @@ import { saveGitHubToken, clearGitHubToken } from '../lib/authFlow';
 export default function ConnectRepoPage() {
   const navigate = useNavigate();
   const { session, loading: authLoading } = useAuth();
+  const accessToken = session?.access_token;
   const setRepoUrl = useAgentStore(s => s.setRepoUrl);
   const setProjectId = useAgentStore(s => s.setProjectId);
 
@@ -29,9 +30,13 @@ export default function ConnectRepoPage() {
   const fetchRepos = async (token) => {
     setLoading(true);
     setError(null);
+    let timeoutId;
 
     try {
-      const data = await getRepos(token);
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('GitHub sync timed out. Retry, or paste the repository URL manually.')), 15000);
+      });
+      const data = await Promise.race([getRepos(token), timeout]);
 
       if (data && data.repos) {
         setRepos(data.repos);
@@ -44,6 +49,7 @@ export default function ConnectRepoPage() {
       setError(e.response?.data?.detail || e.message || 'GitHub sync failed. You can still paste a repo URL manually.');
       return false;
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   };
@@ -63,12 +69,12 @@ export default function ConnectRepoPage() {
   };
 
   useEffect(() => {
-    if (!authLoading && session?.access_token) {
+    if (!authLoading && accessToken) {
       fetchRepos();
-    } else if (!authLoading && !session?.access_token) {
+    } else if (!authLoading && !accessToken) {
       setLoading(false);
     }
-  }, [session, authLoading]);
+  }, [accessToken, authLoading]);
 
   const filtered = Array.isArray(repos) ? repos.filter(r =>
     r.name.toLowerCase().includes(search.toLowerCase()) ||
