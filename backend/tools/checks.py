@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import unquote, urlparse
 from pathlib import Path
 
 from core.repository import IGNORED_DIRS, safe_path
@@ -172,10 +173,25 @@ def _findings(check, inventory):
                 return findings
             except (ValueError, KeyError, TypeError):
                 pass
+
+    def output_path(file):
+        """Resolve tool-reported paths without accepting paths outside the repo."""
+        file = unquote(file)
+        if file.startswith('file://'):
+            parsed = urlparse(file)
+            file = parsed.path if not parsed.netloc else f'//{parsed.netloc}{parsed.path}'
+        path = Path(file)
+        candidate = path if path.is_absolute() else safe_path(inventory.root, root / path)
+        candidate = candidate.resolve()
+        if not candidate.is_relative_to(inventory.root):
+            raise ValueError('Tool output path escapes repository')
+        return candidate.relative_to(inventory.root).as_posix()
+
     for line in check['output'].splitlines():
-        match = re.match(r'(.+?):(\d+)(?::\d+)?:\s*(.*)', line)
+        match = re.match(r'(.+?):(\d+)(?::\d+)?(?::\s*(.*))?$', line)
         if match:
             file, number, message = match.groups()
+            message = message or ''
         else:
             match = re.match(r'FAILED\s+(\S+?\.py)(?:::|\s)(.*)', line)
             if not match:
@@ -183,14 +199,19 @@ def _findings(check, inventory):
             file, message = match.groups()
             number = 0
         try:
-            path = safe_path(inventory.root, root / file)
-            relative = path.relative_to(inventory.root).as_posix()
-        except ValueError:
+            relative = output_path(file)
+        except (OSError, ValueError):
             continue
         if relative not in known_files:
             continue
         name = check['name']
         kind = 'LINTING' if name == 'flake8' else 'TYPE_ERROR' if name == 'mypy' else 'JS' if name.startswith('npm:') else 'LOGIC'
+        if name.startswith('npm:') and re.search(r'SyntaxError|Unexpected token|Unexpected identifier', check['output'], re.I):
+            kind = 'SYNTAX'
+            if not message:
+                message = next((error_line.strip() for error_line in check['output'].splitlines()
+                                if re.search(r'SyntaxError|Unexpected token|Unexpected identifier', error_line, re.I)),
+                               message)
         if name == 'flake8' and message.startswith('E9'):
             kind = 'SYNTAX'
         if name == 'cpp:syntax':
@@ -233,7 +254,19 @@ def run_repository_checks(inventory, on_progress=None):
         result['complete'] = result['complete'] and not no_tests
         if re.search(r'No module named|command not found|not recognized as|couldn.t find a configuration|Missing script:', result['output'], re.I):
             result['complete'] = False
-        status = 'incomplete' if not result['complete'] else 'passed' if result['exit_code'] == 0 else 'failed'
+        optional_script = (
+            spec['command'] is None
+            and not result['output'].startswith(('Invalid', 'Oversized', 'Package manifest'))
+            and re.match(r'^No (?:lint|test) script is configured$', spec['reason'])
+        )
+        if optional_script:
+            result['complete'] = True
+        status = (
+            'skipped' if optional_script
+            else 'incomplete' if not result['complete']
+            else 'passed' if result['exit_code'] == 0
+            else 'failed'
+        )
         check = {**spec, **result, 'status': status}
         checks.append(check)
         # Findings are actionable only when they reference a real source file.
@@ -241,7 +274,16 @@ def run_repository_checks(inventory, on_progress=None):
         if on_progress:
             on_progress(f"{spec['name']} in {spec['root']}: {status}")
     complete = bool(checks) and all(c['complete'] for c in checks) and not inventory.skipped and not inventory.errors
+    # A missing optional script is deliberately reported as `skipped`, not as
+    # a validation failure. It is neutral only when at least one configured
+    # check actually passed; a repository with no runnable checks must not be
+    # reported as healthy.
+    passed = (
+        complete
+        and any(c['status'] == 'passed' for c in checks)
+        and all(c['status'] in {'passed', 'skipped'} for c in checks)
+    )
     return {'complete': complete,
-            'passed': complete and all(c['status'] == 'passed' for c in checks),
+            'passed': passed,
             'checks': checks, 'failures': failures,
             'reason': '' if complete else 'Some source files or checks could not be fully analyzed'}

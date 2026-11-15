@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -58,6 +59,40 @@ def test_dependency_failure_stops_with_actionable_error(tmp_path, monkeypatch):
     monkeypatch.setattr(environment, 'run_command', lambda *args, **kwargs: {'exit_code': 1, 'complete': True, 'output': 'package resolution failed'})
     with pytest.raises(RuntimeError, match='Dependency setup failed'):
         environment.prepare_environment(RepositoryInventory(tmp_path))
+
+
+def test_fast_dependency_setup_skips_heavy_direct_requirements(tmp_path, monkeypatch):
+    (tmp_path / 'app.py').write_text('value = 1\n')
+    (tmp_path / 'requirements.txt').write_text('httpx==0.28.0\ntorch>=2.2.0\n')
+    installed_requirements, progress = [], []
+
+    def command(cmd, *_args, **_kwargs):
+        if '-r' in cmd:
+            installed_requirements.append(Path(cmd[cmd.index('-r') + 1]).read_text())
+        return {'exit_code': 0, 'complete': True, 'output': ''}
+
+    monkeypatch.setattr(environment, 'run_command', command)
+    environment.prepare_environment(RepositoryInventory(tmp_path), progress.append)
+    assert installed_requirements and 'httpx==0.28.0' in installed_requirements[0]
+    assert 'torch>=2.2.0' not in installed_requirements[0]
+    assert any('ALLOW_HEAVY_DEPENDENCIES=true' in item for item in progress)
+
+
+def test_full_dependency_setup_includes_heavy_requirements_when_enabled(tmp_path, monkeypatch):
+    (tmp_path / 'app.py').write_text('value = 1\n')
+    requirements = tmp_path / 'requirements.txt'
+    requirements.write_text('torch>=2.2.0\n')
+    installed_requirements = []
+
+    def command(cmd, *_args, **_kwargs):
+        if '-r' in cmd:
+            installed_requirements.append(Path(cmd[cmd.index('-r') + 1]))
+        return {'exit_code': 0, 'complete': True, 'output': ''}
+
+    monkeypatch.setenv('ALLOW_HEAVY_DEPENDENCIES', 'true')
+    monkeypatch.setattr(environment, 'run_command', command)
+    environment.prepare_environment(RepositoryInventory(tmp_path))
+    assert Path('requirements.txt') in installed_requirements
 
 
 def test_install_progress_streams_output_without_corrupting_capture(tmp_path):

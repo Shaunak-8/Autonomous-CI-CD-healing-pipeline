@@ -26,7 +26,15 @@ def _resolve_enum_label(db: Session, enum_type_name: str, desired_value: str, fa
 
     desired_lower = desired_value.lower()
     
-    # Explicit mapping for pass/fail variations to handle "fail" vs "failed" vs "FAIL"
+    # Prefer an exact canonical label before considering legacy aliases. Older
+    # schemas can contain both `fail` and `failed`; choosing `fail` makes
+    # SQLAlchemy reject the row because the application enum uses `failed`.
+    for label in labels:
+        if label.lower() == desired_lower:
+            return label
+
+    # Explicit mapping for pass/fail variations to support schemas that only
+    # contain the old aliases.
     if desired_lower in ["fail", "failed", "failure"]:
         for label in labels:
             if label.lower() in ["fail", "failed", "failure"]:
@@ -35,10 +43,6 @@ def _resolve_enum_label(db: Session, enum_type_name: str, desired_value: str, fa
         for label in labels:
             if label.lower() in ["pass", "passed", "success"]:
                 return label
-
-    for label in labels:
-        if label.lower() == desired_lower:
-            return label
 
     return labels[0] if labels else (fallback_value or desired_lower)
 

@@ -38,6 +38,7 @@ class AnalysisPolicy:
     size: str
     timeout_seconds: int
     fix_batch_size: int
+    max_fixes_per_run: int
     context_tokens: int
     max_file_bytes: int
 
@@ -49,9 +50,8 @@ class AnalysisPolicy:
             timeout_seconds=positive_setting(
                 'MEDIUM_CHECK_TIMEOUT' if medium else 'SMALL_CHECK_TIMEOUT',
                 600 if medium else 120),
-            fix_batch_size=positive_setting(
-                'MEDIUM_FIX_BATCH_SIZE' if medium else 'SMALL_FIX_BATCH_SIZE',
-                10 if medium else 20),
+            fix_batch_size=min(5, positive_setting('FIX_BATCH_SIZE', 5)),
+            max_fixes_per_run=min(25, positive_setting('MAX_FIXES_PER_RUN', 25)),
             context_tokens=positive_setting('LLM_CONTEXT_TOKENS', 4000),
             max_file_bytes=positive_setting('MAX_SOURCE_FILE_BYTES', 1024 * 1024),
         )

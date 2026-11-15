@@ -7,8 +7,7 @@ def fix_enums():
         # Add labels to runstatusenum
         try:
             conn.execute(text("ALTER TYPE runstatusenum ADD VALUE IF NOT EXISTS 'passed'"))
-            conn.execute(text("ALTER TYPE runstatusenum ADD VALUE IF NOT EXISTS 'fail'"))
-            conn.execute(text("ALTER TYPE runstatusenum ADD VALUE IF NOT EXISTS 'pass'"))
+            conn.execute(text("ALTER TYPE runstatusenum ADD VALUE IF NOT EXISTS 'failed'"))
             print("✅ runstatusenum updated.")
         except Exception as e:
             print(f"⚠️ runstatusenum update note: {e}")
@@ -17,8 +16,6 @@ def fix_enums():
         try:
             conn.execute(text("ALTER TYPE iterationstatusenum ADD VALUE IF NOT EXISTS 'passed'"))
             conn.execute(text("ALTER TYPE iterationstatusenum ADD VALUE IF NOT EXISTS 'failed'"))
-            conn.execute(text("ALTER TYPE iterationstatusenum ADD VALUE IF NOT EXISTS 'fail'"))
-            conn.execute(text("ALTER TYPE iterationstatusenum ADD VALUE IF NOT EXISTS 'pass'"))
             print("✅ iterationstatusenum updated.")
         except Exception as e:
             print(f"⚠️ iterationstatusenum update note: {e}")

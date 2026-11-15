@@ -2,15 +2,54 @@
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from core.repository import safe_path, positive_setting
 from tools.checks import _package_roots, run_command
 
 
+DEFAULT_HEAVY_PACKAGES = {
+    'torch', 'torchvision', 'torchaudio', 'tensorflow', 'tensorflow-cpu',
+    'jax', 'jaxlib', 'paddlepaddle', 'mxnet', 'triton', 'onnxruntime',
+}
+
+
+def _enabled(name: str, default: bool = False) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _heavy_packages() -> set[str]:
+    configured = os.getenv('HEAVY_DEPENDENCY_PACKAGES', '')
+    return DEFAULT_HEAVY_PACKAGES | {item.strip().lower() for item in configured.split(',') if item.strip()}
+
+
+def _filtered_requirements(requirements: Path) -> tuple[Path | None, list[str]]:
+    """Create an install list without opt-in heavyweight direct dependencies."""
+    skipped, retained = [], []
+    for line in requirements.read_text(encoding='utf-8').splitlines():
+        candidate = line.strip()
+        package = candidate.split(';', 1)[0].split('#', 1)[0].strip()
+        package = package.split('[', 1)[0].split('=', 1)[0].split('<', 1)[0].split('>', 1)[0].strip().lower()
+        if package in _heavy_packages():
+            skipped.append(package)
+        else:
+            retained.append(line)
+    if not skipped:
+        return None, []
+    handle = tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', prefix='healing-requirements-', suffix='.txt', delete=False,
+    )
+    try:
+        handle.write('\n'.join(retained) + ('\n' if retained else ''))
+        return Path(handle.name), skipped
+    finally:
+        handle.close()
+
+
 def prepare_environment(inventory, progress=lambda message: None):
     outcomes = []
-    timeout = positive_setting('DEPENDENCY_INSTALL_TIMEOUT', 600)
+    timeout = positive_setting('DEPENDENCY_INSTALL_TIMEOUT', 180)
 
     def execute(name, command, root, required=True):
         progress(f'Preparing {root}: {name} (timeout {timeout}s)')
@@ -29,7 +68,8 @@ def prepare_environment(inventory, progress=lambda message: None):
         return result
 
     def install(name, python, arguments, root):
-        base = [str(python), '-u', '-m', 'pip', 'install', '--no-input', '--disable-pip-version-check', '--progress-bar', 'off']
+        base = [str(python), '-u', '-m', 'pip', 'install', '--quiet', '--no-input',
+                '--disable-pip-version-check', '--progress-bar', 'off', '--prefer-binary']
         default_cache = Path(__file__).resolve().parents[1] / 'results' / 'dependency-wheels'
         cache = Path(os.getenv('DEPENDENCY_WHEELHOUSE') or default_cache).resolve()
         if cache.is_dir() and any(cache.glob('*.whl')):
@@ -53,7 +93,20 @@ def prepare_environment(inventory, progress=lambda message: None):
             execute('create Python virtual environment', [*command, '-m', 'venv', str(directory / '.venv')], root)
         requirements = directory / 'requirements.txt'
         if requirements.exists():
-            install('install Python requirements', python, ['-r', 'requirements.txt'], root)
+            filtered = None
+            try:
+                if _enabled('ALLOW_HEAVY_DEPENDENCIES'):
+                    install('install Python requirements', python, ['-r', 'requirements.txt'], root)
+                else:
+                    filtered, skipped = _filtered_requirements(requirements)
+                    if skipped:
+                        progress(f'{root}: skipping heavyweight dependencies ({", ".join(skipped)}). '
+                                 'Set ALLOW_HEAVY_DEPENDENCIES=true for a full install.')
+                    install('install Python requirements', python,
+                            ['-r', str(filtered or requirements)], root)
+            finally:
+                if filtered:
+                    filtered.unlink(missing_ok=True)
         elif (directory / 'pyproject.toml').exists() or (directory / 'setup.py').exists():
             install('install Python package', python, ['-e', '.'], root)
         install('install validation tools', python, ['pytest', 'flake8', 'mypy'], root)

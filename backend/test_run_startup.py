@@ -1,5 +1,6 @@
 import asyncio
 import io
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from api import sse
@@ -50,3 +51,18 @@ def test_run_failure_details_are_persisted_as_json(monkeypatch):
         assert row.memory == {'error': 'clone failed'}
         assert row.status.value == 'failed'
     engine.dispose()
+
+
+def test_enum_resolution_prefers_canonical_failed_over_legacy_fail():
+    from db import crud
+
+    class PostgresSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name='postgresql'))
+
+        def execute(self, *_args, **_kwargs):
+            return SimpleNamespace(fetchall=lambda: [('running',), ('fail',), ('failed',)])
+
+    assert crud._resolve_enum_label(
+        PostgresSession(), 'iterationstatusenum', 'failed', 'running'
+    ) == 'failed'

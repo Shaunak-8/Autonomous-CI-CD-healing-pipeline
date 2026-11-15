@@ -92,6 +92,39 @@ def test_check_plan_detects_nested_python_and_js_packages(tmp_path):
     assert all(c['command'][0] == sys.executable for c in plan if c['root'] == 'backend')
 
 
+def test_unconfigured_javascript_checks_are_skipped_not_incomplete(tmp_path):
+    (tmp_path / 'app.js').write_text('const value = 1;\n')
+    (tmp_path / 'package.json').write_text(json.dumps({}))
+    report = checks.run_repository_checks(RepositoryInventory(tmp_path))
+    assert not report['passed']
+    assert report['complete']
+    assert {check['status'] for check in report['checks']} == {'skipped'}
+
+
+def test_run_limits_actionable_findings_to_twenty_five(monkeypatch):
+    import agents.orchestrator as orchestrator
+    agent = orchestrator.OrchestratorAgent.__new__(orchestrator.OrchestratorAgent)
+    monkeypatch.setattr(orchestrator, 'emit', Mock())
+    state = {
+        'run_id': 'limit',
+        'repository_profile': {'policy': {'max_fixes_per_run': 25}},
+    }
+    findings = [{'file': f'source_{index}.py', 'line': 1, 'bug_type': 'LOGIC'} for index in range(30)]
+    assert len(agent._limit_failures(state, findings)) == 25
+    assert state['total_findings'] == 30
+    assert state['capped_findings'] == 5
+
+
+def test_provider_slots_rotate_across_configured_credentials():
+    import agents.orchestrator as orchestrator
+    agent = orchestrator.OrchestratorAgent.__new__(orchestrator.OrchestratorAgent)
+    keys = [object(), object(), object()]
+    agent.gemini_models = keys
+    agent._provider_slots = {'groq': 0, 'gemini': 0}
+    selected = [agent._next_provider_client('gemini')[0] for _ in range(5)]
+    assert selected == [keys[0], keys[1], keys[2], keys[0], keys[1]]
+
+
 @pytest.mark.parametrize('package', [[], {'scripts': []}, {'scripts': {'lint': 123}}])
 def test_invalid_package_manifest_reports_incomplete(tmp_path, package):
     (tmp_path / 'app.js').write_text('const value = 1;\n')
@@ -130,6 +163,39 @@ def test_javascript_checks_run_installed_npm_scripts(tmp_path):
     report = checks.run_repository_checks(RepositoryInventory(tmp_path))
     assert not report['passed']
     assert any(c['status'] == 'failed' for c in report['checks'])
+
+
+def test_optional_javascript_lint_does_not_block_a_passing_test(tmp_path):
+    (tmp_path / 'package.json').write_text(json.dumps({
+        'type': 'module', 'scripts': {'test': 'node --test app.test.js'}}))
+    (tmp_path / 'app.js').write_text('export const value = 1;\n')
+    (tmp_path / 'app.test.js').write_text(
+        "import test from 'node:test';\nimport assert from 'node:assert/strict';\n"
+        "import { value } from './app.js';\ntest('value', () => assert.equal(value, 1));\n")
+    report = checks.run_repository_checks(RepositoryInventory(tmp_path))
+    assert report['passed'], report['checks']
+    assert {check['status'] for check in report['checks']} == {'passed', 'skipped'}
+
+
+def test_javascript_syntax_failures_from_file_urls_are_actionable(tmp_path):
+    source = tmp_path / 'src' / 'index.js'
+    source.parent.mkdir()
+    source.write_text('export const = 1;\n')
+    output = (
+        f'file://{source}:1\n'
+        'SyntaxError: Unexpected token =\n'
+    )
+    findings = checks._findings(
+        {'name': 'npm:test', 'root': '.', 'output': output},
+        RepositoryInventory(tmp_path),
+    )
+    assert findings == [{
+        'file': 'src/index.js',
+        'line': 1,
+        'bug_type': 'SYNTAX',
+        'error_message': 'SyntaxError: Unexpected token =',
+        'severity': 'medium',
+    }]
 
 
 @pytest.mark.parametrize('exit_code,output,complete', [
