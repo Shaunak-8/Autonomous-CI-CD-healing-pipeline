@@ -310,6 +310,31 @@ def test_provider_outage_does_not_skip_validation_of_already_applied_edits(tmp_p
     assert state['check_report'] is report
 
 
+def test_validated_batches_publish_to_one_verified_branch(monkeypatch):
+    import agents.orchestrator as orchestration
+    agent = orchestration.OrchestratorAgent.__new__(orchestration.OrchestratorAgent)
+    agent.publish = True
+    agent._batch_entries = [{'file': 'first.py', 'status': 'applied'}]
+    published = Mock(side_effect=[
+        {'status': 'success', 'branch': 'TEAM_AI_FIX', 'commit_sha': 'first-sha', 'verified': True},
+        {'status': 'success', 'branch': 'TEAM_AI_FIX', 'commit_sha': 'second-sha', 'verified': True},
+    ])
+    monkeypatch.setattr(orchestration.git_ops, 'commit_and_push_batch', published)
+    monkeypatch.setattr(orchestration, 'emit', Mock())
+    state = {'run_id': 'partial', 'repo_path': '.', 'token': None, 'branch_name': '',
+             'push_result': None, 'published_commit_sha': None, 'published_batches': 0}
+
+    agent._publish_validated_batch(state)
+    agent._batch_entries = [{'file': 'second.py', 'status': 'applied'}]
+    agent._publish_validated_batch(state)
+
+    assert state['branch_name'] == 'TEAM_AI_FIX'
+    assert state['published_commit_sha'] == 'second-sha'
+    assert state['published_batches'] == 2
+    assert published.call_args_list[1].kwargs['branch_name'] == 'TEAM_AI_FIX'
+    assert published.call_args_list[1].kwargs['expected_remote_sha'] == 'first-sha'
+
+
 def test_provider_failure_keeps_source_findings_pending(monkeypatch):
     import agents.orchestrator as orchestration
     from core.failure_ledger import FailureLedger

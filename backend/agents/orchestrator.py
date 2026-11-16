@@ -58,6 +58,10 @@ class AgentState(TypedDict):
     total_findings: int
     capped_findings: int
     ai: dict
+    branch_name: str
+    push_result: dict
+    published_commit_sha: Optional[str]
+    published_batches: int
 
 # ---------------- ORCHESTRATOR ---------------- #
 
@@ -427,6 +431,54 @@ class OrchestratorAgent:
 
     # ---------------- VALIDATE ---------------- #
 
+    def _publish_validated_batch(self, state: AgentState):
+        """Commit and push one non-regressing batch to this run's fix branch.
+
+        A repository may still have known failures after a useful batch is fixed.
+        Those failures must not prevent already validated work from being saved, but
+        no batch is published when it regresses a check that was passing beforehand.
+        """
+        entries = [entry for entry in getattr(self, '_batch_entries', [])
+                   if entry.get('status') == 'applied']
+        if not entries or not getattr(self, 'publish', True):
+            return
+        if (state.get('push_result') or {}).get('status') == 'failed':
+            return
+
+        run_id = state['run_id']
+        batch_number = state.get('published_batches', 0) + 1
+        branch_name = state.get('branch_name')
+        message = f'Applied autonomous fixes (validated batch {batch_number})'
+        emit(run_id, 'GitAgent',
+             f'Batch {batch_number} passed regression validation. Committing and pushing it to a fix branch...',
+             'COMMIT_STARTED')
+        try:
+            push_res = git_ops.commit_and_push_batch(
+                state['repo_path'], message, branch_name=branch_name, token=state.get('token'),
+                expected_remote_sha=state.get('published_commit_sha'))
+        except Exception as exc:
+            push_res = {'status': 'failed', 'branch': branch_name or '', 'error': str(exc)}
+
+        if push_res.get('status') == 'success' and push_res.get('branch') and push_res.get('commit_sha'):
+            state['branch_name'] = push_res['branch']
+            state['published_commit_sha'] = push_res['commit_sha']
+            state['published_batches'] = batch_number
+            state['push_result'] = push_res
+            emit(run_id, 'GitAgent',
+                 f"Pushed and verified validated batch {batch_number} on branch {push_res['branch']}: "
+                 f"{push_res.get('branch_url') or push_res['commit_sha']}", 'COMMIT_DONE')
+        elif push_res.get('status') == 'nothing_to_commit':
+            state['push_result'] = push_res
+            emit(run_id, 'GitAgent', 'Validated batch did not contain source changes to commit.', 'COMMIT_SKIPPED')
+        else:
+            if push_res.get('status') == 'success':
+                push_res = {**push_res, 'status': 'failed', 'error_type': 'PUBLISH_PROTOCOL_ERROR',
+                            'error': 'The publishing result did not include a verified branch and commit SHA.'}
+            state['push_result'] = push_res
+            emit(run_id, 'GitAgent',
+                 f"Validated batch was not pushed: {push_res.get('error') or push_res.get('status')}",
+                 'COMMIT_FAILED')
+
     def validate_node(self, state: AgentState):
         run_id = state["run_id"]
         if state.get('ai') and not state['ai']['ready'] and not getattr(self, '_batch_backups', {}):
@@ -451,6 +503,11 @@ class OrchestratorAgent:
                 'message': 'Reverted the batch because a previously passing check regressed: ' + ', '.join(c['name'] for c in regressed),
             }), 'FIX_REVERTED')
             val_res = self.validator.validate(state['repo_path'])
+        elif not regressed:
+            # This intentionally does not require the whole repository to pass:
+            # pre-existing failures remain eligible for later batches, while the
+            # current batch has proven it did not break prior green checks.
+            self._publish_validated_batch(state)
         state['check_report'] = val_res['check_report']
         state['failures'] = self._limit_failures(state, val_res['check_report']['failures'])
         state['deferred_failures'] = sum(
@@ -492,29 +549,13 @@ class OrchestratorAgent:
         validated = state['status'] == 'passed' and check_report.get('passed') and check_report.get('complete')
         if not validated:
             state['status'] = 'failed'
-        branch_name = ''
-        push_res = {'status': 'skipped', 'reason': 'No validated changes to push'}
-        if validated and state['fixes_applied'] and getattr(self, 'publish', True):
-            branch_name = git_ops.generate_branch_name(
-                state.get('team_name') or 'HOGRIDERS', state.get('leader_name') or 'AI')
-            emit(run_id, 'GitAgent', 'Validation passed. Committing fixes...', 'COMMIT_STARTED')
-            try:
-                push_res = git_ops.commit_and_push_all(
-                    state['repo_path'], 'Applied autonomous fixes', branch_name, token=state.get('token'))
-                branch_name = push_res.get('branch') or branch_name
-                event = 'COMMIT_DONE' if push_res.get('status') in {'success', 'nothing_to_commit'} else 'COMMIT_FAILED'
-                message = (f"Pushed and verified branch {branch_name}: {push_res.get('branch_url') or push_res.get('commit_sha', '')}"
-                           if push_res.get('status') == 'success' else
-                           f"Push {push_res.get('status')}: {push_res.get('error') or 'No source changes to commit.'}")
-                emit(run_id, 'GitAgent', message, event)
-            except Exception as exc:
-                push_res = {'status': 'failed', 'error': str(exc)}
-                emit(run_id, 'GitAgent', f'Push failed: {exc}', 'COMMIT_FAILED')
-        elif not validated:
-            push_res['reason'] = 'Checks failed or analysis is incomplete'
-            emit(run_id, 'GitAgent', push_res['reason'], 'COMMIT_SKIPPED')
-        elif not getattr(self, 'publish', True):
+        branch_name = state.get('branch_name', '')
+        push_res = state.get('push_result') or {'status': 'skipped', 'reason': 'No validated changes to push'}
+        if not branch_name and not getattr(self, 'publish', True):
             push_res['reason'] = 'Publishing is disabled for this local verification run'
+        elif not branch_name and not validated:
+            push_res['reason'] = 'No batch completed regression validation before the run ended'
+            emit(run_id, 'GitAgent', push_res['reason'], 'COMMIT_SKIPPED')
 
         remaining = len(state['failures'])
         measured = check_report.get('complete') and (validated or remaining)
@@ -575,6 +616,10 @@ class OrchestratorAgent:
             "token": token,
             "total_findings": 0,
             "capped_findings": 0,
+            "branch_name": "",
+            "push_result": None,
+            "published_commit_sha": None,
+            "published_batches": 0,
         }
 
         return self.app.invoke(initial_state, config={'recursion_limit': max_retries * 4 + 10})

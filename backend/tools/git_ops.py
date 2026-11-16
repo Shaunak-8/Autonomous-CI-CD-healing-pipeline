@@ -131,7 +131,8 @@ def classify_error(stderr: str) -> str:
         
     return "UNKNOWN_GIT_ERROR"
 
-def push_changes(repo_path: str, token: str, branch_name: str) -> dict:
+def push_changes(repo_path: str, token: str, branch_name: str, *, allow_existing_branch: bool = False,
+                 expected_remote_sha: str = None) -> dict:
     """
     Requirement 1, 2, 4, 6, 7: Core Fault-Tolerant Push Engine.
     100% Subprocess. Direct URL forcing. 3-stage retries.
@@ -178,10 +179,22 @@ def push_changes(repo_path: str, token: str, branch_name: str) -> dict:
         # SHA on retry means the earlier push reached the remote despite a lost reply.
         listed, refs, stderr = run_git_command(repo_path, ['git', 'ls-remote', '--heads', auth_url, remote_ref], mask_token=token)
         if listed and refs.strip():
-            if attempt > 1 and refs.split()[0] == commit_sha:
+            remote_sha = refs.split()[0]
+            if remote_sha == commit_sha:
                 return _push_success(clean_url, branch_name, commit_sha, attempt)
-            return {'status': 'failed', 'branch': branch_name, 'attempts': attempt, 'error_type': 'BRANCH_EXISTS',
-                    'error': 'The remote fix branch already exists. Start a new run to create a fresh branch.'}
+            if allow_existing_branch and expected_remote_sha and remote_sha == expected_remote_sha:
+                # This branch was created and verified earlier in this run. A normal
+                # (non-force) push below can only fast-forward it from that commit.
+                pass
+            elif allow_existing_branch:
+                return {'status': 'failed', 'branch': branch_name, 'attempts': attempt,
+                        'error_type': 'REMOTE_BRANCH_CHANGED',
+                        'error': 'The remote fix branch changed after the last verified push. Refusing to overwrite it.'}
+            elif attempt > 1 and remote_sha == commit_sha:
+                return _push_success(clean_url, branch_name, commit_sha, attempt)
+            else:
+                return {'status': 'failed', 'branch': branch_name, 'attempts': attempt, 'error_type': 'BRANCH_EXISTS',
+                        'error': 'The remote fix branch already exists. Start a new run to create a fresh branch.'}
         cmd = ["git", "push", auth_url, f"HEAD:{remote_ref}"]
         success, stdout, stderr = run_git_command(repo_path, cmd, mask_token=token) if listed else (False, '', stderr)
         
@@ -257,6 +270,40 @@ def commit_and_push_all(repo_path: str, message: str, branch_name: str = None, t
             "error_type": "CRITICAL_SYSTEM_ERROR",
             "error": str(e)
         }
+
+
+def commit_and_push_batch(repo_path: str, message: str, branch_name: str = None, token: str = None,
+                          expected_remote_sha: str = None) -> dict:
+    """Publish one validated batch without ever force-updating a remote branch.
+
+    The first batch receives a new branch. Later batches may extend that branch only
+    when it still points at the commit verified by the preceding batch in this run.
+    """
+    if not branch_name:
+        return commit_and_push_all(repo_path, message, token=token)
+
+    try:
+        prepare_repo(repo_path)
+        current_ok, current, _ = run_git_command(repo_path, ['git', 'branch', '--show-current'])
+        if not current_ok or current.strip() != branch_name:
+            return {'status': 'failed', 'branch': branch_name, 'attempts': 0, 'error_type': 'BRANCH_ERROR',
+                    'error': 'The working copy is not on the validated fix branch. Push was stopped.'}
+        if not expected_remote_sha:
+            return {'status': 'failed', 'branch': branch_name, 'attempts': 0, 'error_type': 'PUBLISH_STATE_ERROR',
+                    'error': 'Missing the previously verified commit SHA; refusing to update the branch.'}
+        commit_result = commit_changes(repo_path, message)
+        if commit_result is False:
+            return {'status': 'failed', 'branch': branch_name, 'attempts': 0, 'error_type': 'COMMIT_ERROR',
+                    'error': 'Local git commit failed'}
+        if commit_result is None:
+            return {'status': 'nothing_to_commit', 'branch': branch_name, 'attempts': 0,
+                    'commit_sha': expected_remote_sha, 'verified': True}
+        return push_changes(repo_path, token or GITHUB_TOKEN, branch_name, allow_existing_branch=True,
+                            expected_remote_sha=expected_remote_sha)
+    except Exception as exc:
+        logger.exception('[V3] Batch publish failed')
+        return {'status': 'failed', 'branch': branch_name, 'attempts': 0,
+                'error_type': 'CRITICAL_SYSTEM_ERROR', 'error': str(exc)}
 
 def clone_repo(url: str, path: str, token: str = None):
     """Clone one working copy and remove credentials from its saved origin URL."""

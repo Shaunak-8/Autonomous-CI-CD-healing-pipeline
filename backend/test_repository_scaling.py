@@ -413,7 +413,8 @@ def test_workflow_fixes_and_validates_before_push(tmp_path, monkeypatch):
                 'output': "example.py:1:9: F821 undefined name 'missing_name'" if broken else '1 passed'}
 
     monkeypatch.setattr(checks, 'run_command', command)
-    push = Mock(return_value={'status': 'success'})
+    push = Mock(return_value={'status': 'success', 'branch': 'WORKFLOW_FIX', 'commit_sha': 'verified-sha',
+                              'verified': True})
     monkeypatch.setattr(orchestrator.git_ops, 'commit_and_push_all', push)
     agent = orchestrator.OrchestratorAgent()
     agent.ai_status = {'ready': True, 'provider': 'mock', 'reason': ''}
