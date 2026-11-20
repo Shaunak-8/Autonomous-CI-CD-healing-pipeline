@@ -47,7 +47,7 @@ class ContextBuilder:
                 imports.append(node.module)
         return list(dict.fromkeys(imports))
 
-    def build(self, primary_file, repo_path, line=0):
+    def build(self, primary_file, repo_path, line=0, test_file=None):
         path = safe_path(repo_path, primary_file)
         source = self._read_file_safe(path)
         if not source:
@@ -75,9 +75,10 @@ class ContextBuilder:
         primary = ''.join(lines[left:right])
         start, end = sum(map(len, lines[:left])), sum(map(len, lines[:right]))
         remaining = budget - len(primary.encode('utf-8'))
+        reference_test = test_file
         test_file = ''
         relative = Path(primary_file)
-        for candidate in (relative.with_name(f'test_{relative.name}'),
+        for candidate in (*([Path(reference_test)] if reference_test else []), relative.with_name(f'test_{relative.name}'),
                           Path('tests') / f'test_{relative.name}',
                           relative.with_name(f'{relative.stem}_test{relative.suffix}')):
             content = self._read_file_safe(safe_path(repo_path, candidate))

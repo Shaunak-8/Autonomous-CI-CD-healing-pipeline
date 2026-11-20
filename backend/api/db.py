@@ -92,7 +92,12 @@ def get_projects(user_id: str):
     db = SessionLocal()
     try:
         projects = db.query(Project).filter(Project.user_id == user_id).order_by(Project.created_at.desc()).all()
-        return [_project_to_dict(project) for project in projects]
+        ids = [project.id for project in projects]
+        runs = dict(db.query(Run.project_id, func.count(Run.id)).filter(Run.project_id.in_(ids)).group_by(Run.project_id).all()) if ids else {}
+        issues = dict(db.query(Issue.project_id, func.count(Issue.id)).filter(Issue.project_id.in_(ids)).group_by(Issue.project_id).all()) if ids else {}
+        return [{**_project_to_dict(project), 'stats': {
+            'runs': runs.get(project.id, 0), 'issues': issues.get(project.id, 0)
+        }} for project in projects]
     finally:
         db.close()
 

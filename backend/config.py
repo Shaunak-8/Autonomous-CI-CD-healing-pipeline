@@ -23,7 +23,12 @@ def _configured_api_keys(name: str) -> tuple[str, ...]:
 
 GROQ_API_KEY = env_values.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY", "")
 GROQ_API_KEYS = _configured_api_keys("GROQ_API_KEY")
-GITHUB_TOKEN = env_values.get("GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN", "")
+GITHUB_TOKEN = (
+    env_values.get("HOGRIDERS_GITHUB_TOKEN")
+    or os.getenv("HOGRIDERS_GITHUB_TOKEN", "")
+    or env_values.get("GITHUB_TOKEN")
+    or os.getenv("GITHUB_TOKEN", "")
+)
 E2B_API_KEY = env_values.get("E2B_API_KEY") or os.getenv("E2B_API_KEY", "")
 
 # Ensure the system-level environ is also updated for subprocesses
@@ -39,12 +44,11 @@ GEMINI_API_KEYS = _configured_api_keys("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 LLM_PRIMARY_PROVIDER = os.getenv('LLM_PRIMARY_PROVIDER', 'groq').strip().lower()
 
-# A run may modify at most 25 findings. Five fixes per batch gives five
-# independent validation checkpoints before publishing is considered.
-MAX_FIXES_PER_RUN = min(25, int(os.getenv('MAX_FIXES_PER_RUN', '25')))
+# Validate every batch of at most five files. Zero disables the per-run edit cap.
+MAX_FIXES_PER_RUN = int(os.getenv('MAX_FIXES_PER_RUN', '0'))
 FIX_BATCH_SIZE = min(5, int(os.getenv('FIX_BATCH_SIZE', '5')))
-if MAX_FIXES_PER_RUN <= 0 or FIX_BATCH_SIZE <= 0:
-    raise ValueError('MAX_FIXES_PER_RUN and FIX_BATCH_SIZE must be positive')
+if MAX_FIXES_PER_RUN < 0 or FIX_BATCH_SIZE <= 0:
+    raise ValueError('MAX_FIXES_PER_RUN must be nonnegative (0 means all findings); FIX_BATCH_SIZE must be positive')
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")

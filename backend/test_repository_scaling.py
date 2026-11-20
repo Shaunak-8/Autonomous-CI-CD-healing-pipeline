@@ -101,7 +101,7 @@ def test_unconfigured_javascript_checks_are_skipped_not_incomplete(tmp_path):
     assert {check['status'] for check in report['checks']} == {'skipped'}
 
 
-def test_run_limits_actionable_findings_to_twenty_five(monkeypatch):
+def test_run_retains_all_findings_even_with_an_edit_budget(monkeypatch):
     import agents.orchestrator as orchestrator
     agent = orchestrator.OrchestratorAgent.__new__(orchestrator.OrchestratorAgent)
     monkeypatch.setattr(orchestrator, 'emit', Mock())
@@ -110,9 +110,9 @@ def test_run_limits_actionable_findings_to_twenty_five(monkeypatch):
         'repository_profile': {'policy': {'max_fixes_per_run': 25}},
     }
     findings = [{'file': f'source_{index}.py', 'line': 1, 'bug_type': 'LOGIC'} for index in range(30)]
-    assert len(agent._limit_failures(state, findings)) == 25
+    assert len(agent._limit_failures(state, findings)) == 30
     assert state['total_findings'] == 30
-    assert state['capped_findings'] == 5
+    assert state['capped_findings'] == 0
 
 
 def test_provider_slots_rotate_across_configured_credentials():

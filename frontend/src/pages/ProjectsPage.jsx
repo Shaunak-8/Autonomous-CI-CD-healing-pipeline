@@ -24,7 +24,7 @@ export default function ProjectsPage() {
     }
 
     let active = true;
-    let timeoutId;
+    const controller = new AbortController();
     async function fetchProjects() {
       if (!accessToken) {
         if (active) setLoading(false);
@@ -33,23 +33,19 @@ export default function ProjectsPage() {
       setLoading(true);
       setLoadError('');
       try {
-        const timeout = new Promise((_, reject) => {
-          timeoutId = setTimeout(() => reject(new Error('Loading projects timed out. Check your connection and try again.')), 15000);
-        });
-        const data = await Promise.race([getProjects(), timeout]);
+        const data = await getProjects(controller.signal);
         if (active) setProjects(data.projects || []);
       } catch (e) {
         console.error(e);
         if (active) setLoadError(e.response?.data?.detail || e.message || 'Unable to load projects. Please try again.');
       } finally {
-        clearTimeout(timeoutId);
         if (active) setLoading(false);
       }
     }
     fetchProjects();
     return () => {
       active = false;
-      clearTimeout(timeoutId);
+      controller.abort();
     };
   }, [accessToken, authLoading, retryCount]);
 

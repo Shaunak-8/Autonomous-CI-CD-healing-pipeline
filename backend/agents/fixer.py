@@ -24,7 +24,7 @@ class ProvidersUnavailable(RuntimeError):
             self.providers.append({'provider': provider, 'status': status, 'reason': reason, 'retryable': retryable})
         self.retryable = any(p['retryable'] for p in self.providers)
         summary = '; '.join(f"{p['provider']}: {p['reason']}" for p in self.providers)
-        super().__init__(f'AI generation unavailable ({summary}). No further provider requests will be made in this run.')
+        super().__init__(f'AI generation unavailable for the selected credentials ({summary}).')
 
 class FixerRouter:
     @staticmethod
@@ -116,20 +116,21 @@ class BaseFixerAgent:
         raise RuntimeError('No generation provider is configured')
 
 
-    def fix(self, failure: dict, repo_path: str, history: list = None) -> dict:
+    def fix(self, failure: dict, repo_path: str, history: list = None, _edit_retry: int = 0) -> dict:
         if not self.groq_client and not self.gemini_model:
             # No LLM configured; run without auto-fix capability.
             return {}
 
         # Build context
         file_path = os.path.join(repo_path, failure["file"])
-        context = self.context_builder.build(failure["file"], repo_path, failure.get('line', 0))
+        reference = {'test_file': failure['test_file']} if failure.get('test_file') else {}
+        context = self.context_builder.build(failure["file"], repo_path, failure.get('line', 0), **reference)
 
         # Build prompt
         history_str = ""
         if history:
             history_str = "\nPrevious failed attempts:\n" + "\n".join(
-                [f"- {h['fix'][:100]}... -> {h['result']}" for h in history[-3:]]
+                [f"- {h['fix'][:2000]} -> {h['result']}" for h in history[-3:]]
             )
 
         import_context = '\n'.join(f"{item['path']}:\n{item['content']}" for item in context.get('imports', []))
@@ -188,11 +189,20 @@ No markdown, explanations, or changes to unrelated logic."""
                         old = old.replace('\r\n', '\n')
                     if isinstance(new, str):
                         new = new.replace('\r\n', '\n')
+                    if isinstance(old, str) and old and old not in primary:
+                        # Providers occasionally return edits for reference imports.
+                        # Leave those files for their own routed fix and validation.
+                        notify = getattr(self, 'on_progress', None)
+                        if notify:
+                            notify('Ignored an edit that does not match the assigned source excerpt; applying matching edits only to ' + failure['file'])
+                        continue
                     if not isinstance(old, str) or not isinstance(new, str) or not old or primary.count(old) != 1:
                         raise ValueError('An edit does not uniquely match the source excerpt')
                     start = primary.index(old)
                     replacements.append((start, start + len(old), new))
                 replacements.sort()
+                if not replacements:
+                    raise ValueError('No edits target the requested source file')
                 if any(a[1] > b[0] for a, b in zip(replacements, replacements[1:])):
                     raise ValueError('Overlapping edits were rejected')
                 for start, end, new in reversed(replacements):
@@ -221,6 +231,14 @@ No markdown, explanations, or changes to unrelated logic."""
                 return {'error': str(e), 'provider_failure': True, 'retryable': e.retryable,
                         'providers': e.providers}
             if isinstance(e, ValueError):
+                if _edit_retry < 2:
+                    notify = getattr(self, 'on_progress', None)
+                    if notify:
+                        notify(f'Generated edit rejected ({e}); requesting a corrected edit ({_edit_retry + 1}/2).')
+                    feedback = list(history or []) + [{
+                        'fix': 'Rejected edit: ' + str(locals().get('fixed_code', ''))[:2000],
+                        'result': str(e) + '. Copy each old string verbatim from the source excerpt, including indentation. Use a longer unique block when a string occurs more than once. Return edits only for this file.'}]
+                    return self.fix(failure, repo_path, feedback, _edit_retry + 1)
                 return {'error': f'Generated edit was rejected: {e}. The original source was preserved.'}
             return {'error': f'Fix generation failed ({type(e).__name__}). Check model access, provider quota, and credentials.',
                     'retryable': isinstance(e, RateLimitError) or getattr(e, 'retryable', False)}

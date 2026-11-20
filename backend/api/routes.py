@@ -7,6 +7,7 @@ import threading
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from db.db import get_db, SessionLocal
 from api.db import (
@@ -74,7 +75,7 @@ def background_agent_run(run_id: str, repo_url: str, team_name: str, leader_name
         if project_id:
             try:
                 report = result.get('results') or result
-                update_run_result(run_id, report.get("status", "failed"), report)
+                crud.update_run(db, run_id, status=report.get("status", "failed"), memory=report)
             except Exception as e:
                 print(f"DB update error: {e}")
                 
@@ -157,10 +158,7 @@ async def list_projects(request: Request):
     try:
         await verify_token(request)
         user_id = get_user_id(request)
-        projects = get_projects(user_id)
-        
-        for p in projects:
-            p['stats'] = get_project_stats(p['id'])
+        projects = await run_in_threadpool(get_projects, user_id)
             
         return {"projects": projects}
     except HTTPException:
@@ -237,14 +235,14 @@ async def run_agent(
     run_id = str(uuid.uuid4())[:8]
 
     # Create a DB run immediately so background tasks can link iterations/fixes to it.
-    db_create_run(
-        run_id=run_id,
-        project_id=request_body.project_id,
-        repo_url=request_body.repo_url,
-        team_name=request_body.team_name,
-        leader_name=request_body.leader_name,
-        branch_name=request_body.branch_name,
-    )
+    def persist_run():
+        with SessionLocal() as run_db:
+            return crud.create_run(run_db,
+                run_id=run_id, project_id=request_body.project_id,
+                repo_url=request_body.repo_url, team_name=request_body.team_name,
+                leader_name=request_body.leader_name, branch_name=request_body.branch_name)
+
+    await run_in_threadpool(persist_run)
 
     # Initialize SSE Queue
     get_queue(run_id)

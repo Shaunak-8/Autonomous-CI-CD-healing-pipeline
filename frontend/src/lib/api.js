@@ -1,5 +1,8 @@
 import axios from 'axios';
-import { getAccessToken, getGitHubToken } from './supabase';
+import { supabase } from './supabase';
+import { useAuth } from '../hooks/useAuth';
+import { cacheGitHubSession } from './authFlow';
+import { requestSession } from './requestAuth';
 
 const baseUrl = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
@@ -10,11 +13,12 @@ const api = axios.create({
 
 // Attach auth token to every request
 api.interceptors.request.use(async (config) => {
-  const token = await getAccessToken();
+  const session = await requestSession(supabase.auth, useAuth.getState().session);
+  const token = session?.access_token;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
-  const ghToken = await getGitHubToken();
+  const ghToken = cacheGitHubSession(session);
   if (ghToken && !config.headers['X-GitHub-Token']) {
     config.headers['X-GitHub-Token'] = ghToken;
   }
@@ -51,8 +55,8 @@ export const registerUser = async (userData) => {
     return response.data;
 };
 
-export const getProjects = async () => {
-    const response = await api.get('/projects');
+export const getProjects = async (signal) => {
+    const response = await api.get('/projects', { signal, timeout: 12000 });
     return response.data;
 };
 

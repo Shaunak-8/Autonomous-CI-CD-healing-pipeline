@@ -141,6 +141,7 @@ def check_plan(inventory):
         compiler = shutil.which('g++')
         for source in cpp_files:
             plan.append({'name': 'cpp:syntax', 'root': '.',
+                         'source': source,
                          'command': [compiler, '-fsyntax-only', source] if compiler else None,
                          'reason': 'g++ is not installed'})
         plan.append({'name': 'cpp:tests', 'root': '.', 'command': None,
@@ -153,6 +154,7 @@ def check_plan(inventory):
 
 def _findings(check, inventory):
     findings = []
+    mapped_tests = set()
     known_files = set(inventory.source_files())
     root = Path(check['root'])
     if check['name'] == 'npm:lint':
@@ -187,6 +189,29 @@ def _findings(check, inventory):
             raise ValueError('Tool output path escapes repository')
         return candidate.relative_to(inventory.root).as_posix()
 
+    # Pytest summaries name tests, while tracebacks name the source modules
+    # that raised the error. Preserve those frames to target the real cause.
+    if check['name'] == 'pytest':
+        traceback_message = check['output'][-4000:]
+        seen_frames = set()
+        for raw_path, line_number in re.findall(r'File "([^"]+\.py)", line (\d+)', check['output']):
+            try:
+                relative = output_path(raw_path)
+            except (OSError, ValueError):
+                continue
+            if relative not in known_files or relative in seen_frames:
+                continue
+            seen_frames.add(relative)
+            if Path(relative).name.startswith('test_') or 'tests' in Path(relative).parts:
+                continue
+            findings.append({
+                'file': relative,
+                'line': int(line_number),
+                'bug_type': 'LOGIC',
+                'error_message': f'Pytest traceback reaches {relative}:{line_number}\n{traceback_message}',
+                'severity': 'high',
+            })
+
     for line in check['output'].splitlines():
         match = re.match(r'(.+?):(\d+)(?::\d+)?(?::\s*(.*))?$', line)
         if match:
@@ -219,16 +244,59 @@ def _findings(check, inventory):
         if name == 'pytest' and (Path(relative).name.startswith('test_') or 'tests' in Path(relative).parts):
             try:
                 tree = ast.parse(safe_path(inventory.root, relative).read_text(encoding='utf-8'))
-                candidates = set()
+                bindings = {}
                 for node in ast.walk(tree):
                     if isinstance(node, ast.ImportFrom) and node.module:
-                        candidate = (root / (node.module.replace('.', '/') + '.py')).as_posix()
-                        if candidate in known_files and not Path(candidate).name.startswith('test_'):
-                            candidates.add(candidate)
-                if len(candidates) == 1:
-                    message = f'Test failure in {relative}: {message}\n' + check['output'][-1200:]
-                    relative = candidates.pop()
-                    number = 0
+                        for suffix in (node.module.replace('.', '/') + '.py', node.module.replace('.', '/') + '/__init__.py'):
+                            candidate = (root / suffix).as_posix()
+                            if candidate in known_files and not Path(candidate).name.startswith('test_'):
+                                for alias in node.names:
+                                    bindings[alias.asname or alias.name] = candidate
+                    elif isinstance(node, ast.Import):
+                        for alias in node.names:
+                            candidate = (root / (alias.name.replace('.', '/') + '.py')).as_posix()
+                            if candidate in known_files:
+                                bindings[alias.asname or alias.name.split('.')[0]] = candidate
+                functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                target = next((n for n in functions if n.lineno <= int(number) <= n.end_lineno), None)
+                if target is None:
+                    target = next((n for n in functions if re.search(r'\b' + re.escape(n.name) + r'\b', message)), None)
+                scope = target or tree
+                used = {n.id for n in ast.walk(scope) if isinstance(n, ast.Name)}
+                candidates = sorted({path for name, path in bindings.items() if name in used})
+                if target is None:
+                    candidates = sorted(set(bindings.values()))
+                if candidates:
+                    # A public service may delegate the bug to a model/helper.
+                    # Include its direct repository dependencies as source targets.
+                    dependencies = set(candidates)
+                    called_methods = {n.func.attr for n in ast.walk(scope)
+                                      if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+                    for candidate in candidates:
+                        try:
+                            source_tree = ast.parse(safe_path(inventory.root, candidate).read_text(encoding='utf-8'))
+                            for imported in ast.walk(source_tree):
+                                if isinstance(imported, ast.ImportFrom) and imported.module:
+                                    dependency = (root / (imported.module.replace('.', '/') + '.py')).as_posix()
+                                    if dependency in known_files and not Path(dependency).name.startswith('test_'):
+                                        dependency_tree = ast.parse(safe_path(inventory.root, dependency).read_text(encoding='utf-8'))
+                                        methods = {n.name for n in ast.walk(dependency_tree)
+                                                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                                        if methods & called_methods:
+                                            dependencies.add(dependency)
+                        except (OSError, ValueError, SyntaxError):
+                            pass
+                    candidates = sorted(dependencies)
+                    test_source = ast.get_source_segment(safe_path(inventory.root, relative).read_text(encoding='utf-8'), scope) or ''
+                    for candidate in candidates:
+                        identity = (relative, getattr(target, 'name', message), candidate)
+                        if identity in mapped_tests:
+                            continue
+                        mapped_tests.add(identity)
+                        findings.append({'file': candidate, 'line': 0, 'bug_type': kind,
+                            'error_message': f'Test failure in {relative}: {message}\n{test_source[:1800]}\n{check["output"][-1800:]}'[:4000],
+                            'test_file': relative, 'severity': 'high'})
+                    continue
             except (OSError, ValueError, SyntaxError):
                 pass
         findings.append({'file': relative, 'line': int(number), 'bug_type': kind,

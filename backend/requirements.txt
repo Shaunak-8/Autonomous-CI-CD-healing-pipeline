@@ -5,6 +5,7 @@ pydantic
 pydantic-settings
 python-dotenv
 groq
+instructor
 langgraph
 e2b
 pytest

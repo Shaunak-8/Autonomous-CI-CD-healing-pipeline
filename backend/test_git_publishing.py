@@ -102,6 +102,73 @@ def test_github_publication_links_use_credential_free_urls():
     assert result['commit_url'] == 'https://github.com/owner/repo/commit/abc123'
 
 
+@pytest.mark.parametrize('fail_after', [None, 7])
+def test_five_issues_per_key_and_partial_batches_reach_real_remote(repository, tmp_path, monkeypatch, fail_after):
+    import json
+    import httpx
+    from groq import RateLimitError
+    from agents.orchestrator import OrchestratorAgent
+    from agents.fixer import BaseFixerAgent, ProvidersUnavailable
+    from core.repository import RepositoryInventory
+    from collections import Counter
+    work, remote, _ = repository
+    for index in range(12):
+        (work / f'issue_{index:02}.py').write_text('value = 0\n')
+    git(work, 'add', '.')
+    git(work, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'Batch fixture')
+    git(work, 'push', 'origin', 'main')
+    original = git(remote, 'rev-parse', 'main')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('MAX_FIXES_PER_RUN', '0')
+    monkeypatch.setenv('FIX_BATCH_SIZE', '5')
+    agent = OrchestratorAgent(publish=True)
+    keys = [object(), object(), object()]
+    agent.groq_clients = keys
+    agent.groq_client = keys[0]
+    agent.gemini_models = []
+    agent.gemini_model = None
+    agent.ai_status = {'ready': True, 'provider': 'groq', 'model': 'fixture'}
+    assignments = []
+    def generate(fixer, _prompt):
+        assignments.append(keys.index(fixer.groq_client))
+        if fail_after is not None and len(assignments) > fail_after:
+            error = RateLimitError('fixture quota', body={}, response=httpx.Response(
+                429, request=httpx.Request('POST', 'https://example.invalid')))
+            raise ProvidersUnavailable([('groq', error)])
+        return json.dumps({'edits': [{'old': 'value = 0', 'new': 'value = 1'}]}), 'groq'
+    monkeypatch.setattr(BaseFixerAgent, '_generate', generate)
+    def report():
+        failures = [{'file': p.name, 'line': 1, 'bug_type': 'LOGIC', 'error_message': 'Expected value = 1'}
+                    for p in sorted(work.glob('issue_*.py')) if p.read_text() == 'value = 0\n']
+        return {'complete': True, 'passed': not failures, 'failures': failures,
+                'checks': [{'root': '.', 'name': 'fixture', 'status': 'failed' if failures else 'passed'}]}
+    def analyze(repo_path, run_id=None):
+        agent.analyzer.inventory = RepositoryInventory(repo_path)
+        agent.analyzer.check_report = report()
+        return agent.analyzer.check_report['failures']
+    monkeypatch.setattr(agent.analyzer, 'run', analyze)
+    monkeypatch.setattr(agent.validator, 'validate', lambda _: {
+        'status': 'passed' if report()['passed'] else 'failed', 'check_report': report()})
+    result = agent.run('ba7c0012', str(remote), str(work))['results']
+    expected = 12 if fail_after is None else fail_after
+    assert result['status'] == ('passed' if fail_after is None else 'failed')
+    assert result['total_fixes'] == expected
+    assert result['total_failures'] == 12 - expected
+    assert assignments[:5] == [0] * 5
+    if fail_after is None:
+        assert assignments == [0] * 5 + [1] * 5 + [2] * 2
+    else:
+        assert assignments == [0] * 5 + [1] * 3 + [2, 0]
+    assert max(Counter(f['iteration'] for f in result['fixes']).values()) <= 5
+    assert result['push']['verified']
+    branch = result['branch']
+    assert git(remote, 'rev-parse', branch) == result['push']['commit_sha']
+    assert git(remote, 'rev-list', '--count', f'main..{branch}') == ('3' if fail_after is None else '2')
+    for index in range(12):
+        assert git(remote, 'show', f'{branch}:issue_{index:02}.py') == ('value = 1' if index < expected else 'value = 0')
+    assert git(remote, 'rev-parse', 'main') == original
+
+
 def test_workflow_runs_real_checks_pushes_fix_and_persists_branch(repository, tmp_path, monkeypatch):
     from unittest.mock import Mock
     from sqlalchemy import create_engine

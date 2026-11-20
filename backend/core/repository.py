@@ -51,7 +51,7 @@ class AnalysisPolicy:
                 'MEDIUM_CHECK_TIMEOUT' if medium else 'SMALL_CHECK_TIMEOUT',
                 600 if medium else 120),
             fix_batch_size=min(5, positive_setting('FIX_BATCH_SIZE', 5)),
-            max_fixes_per_run=min(25, positive_setting('MAX_FIXES_PER_RUN', 25)),
+            max_fixes_per_run=max(0, int(os.getenv('MAX_FIXES_PER_RUN', '0'))),
             context_tokens=positive_setting('LLM_CONTEXT_TOKENS', 4000),
             max_file_bytes=positive_setting('MAX_SOURCE_FILE_BYTES', 1024 * 1024),
         )

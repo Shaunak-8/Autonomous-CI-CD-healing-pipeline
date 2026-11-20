@@ -50,10 +50,11 @@ def _resolve_enum_label(db: Session, enum_type_name: str, desired_value: str, fa
 # RUN CRUD
 # ============
 
-def create_run(db: Session, run_id: str, repo_url: str, team_name: str, leader_name: str, branch_name: str = "main"):
+def create_run(db: Session, run_id: str, repo_url: str, team_name: str, leader_name: str, branch_name: str = "main", project_id: Optional[str] = None):
     run_status = _resolve_enum_label(db, "runstatusenum", "running", "pending")
     db_run = models.Run(
         id=run_id,
+        project_id=project_id,
         repo_url=repo_url,
         team_name=team_name,
         leader_name=leader_name,

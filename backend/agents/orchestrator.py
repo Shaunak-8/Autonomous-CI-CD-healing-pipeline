@@ -19,7 +19,7 @@ from core.dependency_graph import DependencyGraph
 from core.failure_ledger import FailureLedger
 from core.confidence import calculate as calc_confidence
 from core.context_builder import ContextBuilder
-from core.repository import safe_path
+from core.repository import safe_path, RepositoryInventory
 from core.llm_status import check_groq
 from core.gemini_client import GeminiModel
 
@@ -62,6 +62,7 @@ class AgentState(TypedDict):
     push_result: dict
     published_commit_sha: Optional[str]
     published_batches: int
+    stop_reason: str
 
 # ---------------- ORCHESTRATOR ---------------- #
 
@@ -128,17 +129,10 @@ class OrchestratorAgent:
         self.app = workflow.compile()
 
     def _limit_failures(self, state, failures):
-        """Keep a run bounded while making the cap visible to the dashboard."""
-        limit = state.get('repository_profile', {}).get('policy', {}).get(
-            'max_fixes_per_run', config.MAX_FIXES_PER_RUN)
+        """Retain every finding; batching limits edits, never diagnostic visibility."""
         state['total_findings'] = len(failures)
-        state['capped_findings'] = max(0, len(failures) - limit)
-        if state['capped_findings']:
-            emit(state['run_id'], 'AnalyzerAgent',
-                 f"Limiting this run to the first {limit} actionable findings; "
-                 f"{state['capped_findings']} additional findings require a new run.",
-                 'FINDING_LIMIT_REACHED')
-        return failures[:limit]
+        state['capped_findings'] = 0
+        return failures
 
     def _next_provider_client(self, provider):
         clients = getattr(self, 'gemini_models', None) if provider == 'gemini' else getattr(self, 'groq_clients', None)
@@ -149,9 +143,12 @@ class OrchestratorAgent:
             return None, 0, 0
         if not hasattr(self, '_provider_slots'):
             self._provider_slots = {'groq': 0, 'gemini': 0}
-        index = self._provider_slots[provider] % len(clients)
-        self._provider_slots[provider] += 1
-        return clients[index], index + 1, len(clients)
+        for _ in clients:
+            index = self._provider_slots[provider] % len(clients)
+            self._provider_slots[provider] += 1
+            if id(clients[index]) not in getattr(self, '_unavailable_clients', set()):
+                return clients[index], index + 1, len(clients)
+        return None, 0, len(clients)
 
     # ---------------- ANALYZE ---------------- #
 
@@ -172,6 +169,9 @@ class OrchestratorAgent:
         failures = self.analyzer.run(state["repo_path"], run_id=run_id)
         state['repository_profile'] = self.analyzer.inventory.summary()
         failures = self._limit_failures(state, failures)
+        batch_size = self.analyzer.inventory.policy.fix_batch_size
+        required_batches = (len(failures) + batch_size - 1) // batch_size
+        state['max_retries'] = max(state['max_retries'], required_batches + config.MAX_RETRIES)
         state['check_report'] = self.analyzer.check_report
         policy = self.analyzer.inventory.policy
         self.context_builder = ContextBuilder(policy.context_tokens, policy.max_file_bytes)
@@ -261,14 +261,22 @@ class OrchestratorAgent:
             severity.get(f.get('severity'), 2), f.get('file', '')))
         policy = state['repository_profile']['policy']
         fix_limit = policy.get('max_fixes_per_run', config.MAX_FIXES_PER_RUN)
-        remaining_budget = max(0, fix_limit - len(state['fixes_applied']))
+        applied_count = sum(f.get('status') == 'applied' for f in state['fixes_applied'])
+        remaining_budget = max(0, fix_limit - applied_count) if fix_limit else len(sorted_failures)
         batch_size = min(policy.get('fix_batch_size', config.FIX_BATCH_SIZE), remaining_budget)
         if batch_size == 0:
             state['deferred_failures'] = 0
-            emit(run_id, 'OrchestratorAgent', 'The 25-fix run limit has been reached; validation and reporting will continue.',
+            state['stop_reason'] = 'Configured fix budget reached; remaining findings are included in the report.'
+            emit(run_id, 'OrchestratorAgent', state['stop_reason'],
                  'FIX_LIMIT_REACHED')
             return state
         attempted = 0
+        batch_clients = {}
+
+        def batch_client(provider):
+            if provider not in batch_clients:
+                batch_clients[provider] = self._next_provider_client(provider)
+            return batch_clients[provider]
         
         grouped = {}
         finding_keys = {id(f): self._finding_strategy(f, state['repo_path']) for f in sorted_failures}
@@ -279,6 +287,9 @@ class OrchestratorAgent:
                 f['file'], self._finding_strategy(f, state['repo_path']))]
             if not eligible:
                 continue
+            if attempted >= batch_size:
+                break
+            eligible = eligible[:batch_size - attempted]
             failure = dict(eligible[0])
             file_key = failure.get("file")
             bug_type = failure.get("bug_type", "UNKNOWN")
@@ -296,7 +307,7 @@ class OrchestratorAgent:
                 self.ledger.add_attempt(file_key, strategy, 'validation_only')
                 emit(run_id, 'ValidatorAgent', f'Keeping {file_key} unchanged; test failures require a source-code fix.', 'FIX_ROUTED')
                 continue
-            attempted += 1
+            attempted += len(eligible)
             
             try:
                 emit(run_id, "OrchestratorAgent", f"Routing {bug_type} fix for {file_key}...", "FIX_ROUTED")
@@ -304,12 +315,12 @@ class OrchestratorAgent:
                 AgentClass = self.router.route(bug_type, file_path=file_key)
                 primary = self.ai_status.get('provider', 'groq')
                 if primary == 'gemini':
-                    primary_client, slot, slots = self._next_provider_client(primary)
-                    fallback = self.groq_client
+                    primary_client, slot, slots = batch_client(primary)
+                    fallback = batch_client('groq')[0]
                     agent = AgentClass(fallback, self.context_builder, gemini_model=primary_client)
                 elif primary == 'groq':
-                    primary_client, slot, slots = self._next_provider_client(primary)
-                    fallback = self.gemini_model
+                    primary_client, slot, slots = batch_client(primary)
+                    fallback = batch_client('gemini')[0]
                     agent = AgentClass(primary_client, self.context_builder, gemini_model=fallback)
                 else:
                     # Test and extension providers can supply their own mock
@@ -319,7 +330,7 @@ class OrchestratorAgent:
                 agent.primary_provider = self.ai_status.get('provider', 'groq')
                 if slots:
                     emit(run_id, 'OrchestratorAgent',
-                         f'Batch slot {attempted}/{batch_size} assigned to {primary} credential {slot}/{slots}.',
+                         f'Batch progress {attempted}/{batch_size} issues assigned to {primary} credential {slot}/{slots}.',
                          'PROVIDER_SLOT_ASSIGNED')
                 agent.on_progress = lambda message: emit(run_id, 'FixerAgent', message, 'AI_RETRY')
                 
@@ -380,7 +391,8 @@ class OrchestratorAgent:
                     self._batch_entries.append(fix_entry)
                     
                     # Record in ledger and memory
-                    self.ledger.add_attempt(file_key, strategy, fix_entry["status"])
+                    for finding in eligible:
+                        self.ledger.add_attempt(file_key, finding_keys[id(finding)], fix_entry["status"])
                     self.memory.record(file_key, failure.get("line", 0), strategy, fix_entry["status"])
                     
                     emit(run_id, agent.specialty + "Agent", json.dumps(fix_entry), "FIX_APPLIED")
@@ -410,17 +422,35 @@ class OrchestratorAgent:
                         )
                 else:
                     if fix_res and (fix_res.get('retryable') or fix_res.get('provider_failure')):
-                        state['ai'] = {**self.ai_status, 'ready': False, 'reason': fix_res['error'],
-                                       'provider_errors': fix_res.get('providers', [])}
-                        emit(run_id, 'FixerAgent', fix_res['error'], 'AI_UNAVAILABLE')
+                        unavailable = getattr(self, '_unavailable_clients', set())
+                        failed_providers = [p['provider'] for p in fix_res.get('providers', [])] or [primary]
+                        for provider in failed_providers:
+                            client = batch_clients.get(provider, (None, 0, 0))[0]
+                            if client is not None:
+                                unavailable.add(id(client))
+                        self._unavailable_clients = unavailable
+                        available = [provider for provider, clients in (
+                            ('groq', getattr(self, 'groq_clients', [])),
+                            ('gemini', getattr(self, 'gemini_models', [])))
+                            if any(id(client) not in unavailable for client in clients)]
+                        self.ai_status = {**self.ai_status, 'ready': bool(available),
+                                          'reason': fix_res['error'], 'provider_errors': fix_res.get('providers', [])}
+                        if available:
+                            self.ai_status['provider'] = primary if primary in available else available[0]
+                        state['ai'] = self.ai_status
+                        emit(run_id, 'FixerAgent', fix_res['error'] + (
+                            ' Validating current edits before retrying with the next available credential.' if available else ''),
+                            'AI_RETRY' if available else 'AI_UNAVAILABLE')
                         break
-                    self.ledger.add_attempt(file_key, strategy, "failed")
+                    for finding in eligible:
+                        self.ledger.add_attempt(file_key, finding_keys[id(finding)], 'failed')
                     message = fix_res.get('error') if fix_res else None
                     emit(run_id, "OrchestratorAgent", message or f"Failed to generate fix for {file_key}", "FIX_FAILED")
             except Exception as e:
                 logger.error(f"Error during fix loop for {file_key}: {e}", exc_info=True)
                 emit(run_id, "OrchestratorAgent", f"Crash during fix for {file_key}: {str(e)}", "FIX_FAILED")
-                self.ledger.add_attempt(file_key, strategy, "failed")
+                for finding in eligible:
+                    self.ledger.add_attempt(file_key, finding_keys[id(finding)], 'failed')
                 
         state['deferred_failures'] = sum(
             not self.ledger.was_tried(f.get('file'), finding_keys[id(f)])
@@ -486,10 +516,13 @@ class OrchestratorAgent:
             return state
         emit(run_id, "ValidatorAgent", "Validating fixes...", "VALIDATION_STARTED")
         
-        baseline = {(c['root'], c['name']) for c in state.get('check_report', {}).get('checks', []) if c['status'] == 'passed'}
+        def check_identity(check):
+            return (check['root'], check['name'], check.get('source'), tuple(check.get('command') or []))
+        baseline = {check_identity(c) for c in state.get('check_report', {}).get('checks', []) if c['status'] == 'passed'}
         val_res = self.validator.validate(state["repo_path"])
-        regressed = [c for c in val_res['check_report']['checks']
-                     if (c['root'], c['name']) in baseline and c['status'] != 'passed']
+        current = {check_identity(c): c for c in val_res['check_report']['checks']}
+        regressed = [current.get(key, {'name': key[1], 'status': 'missing'})
+                     for key in baseline if key not in current or current[key]['status'] != 'passed']
         if regressed and getattr(self, '_batch_backups', {}):
             for file, content in self._batch_backups.items():
                 with open(safe_path(state['repo_path'], file), 'w', encoding='utf-8', newline='') as handle:
@@ -533,12 +566,19 @@ class OrchestratorAgent:
         if not state['failures']:
             return 'end'
         if state.get('ai') and not state['ai']['ready']:
+            state['stop_reason'] = state['ai'].get('reason', 'AI providers unavailable')
+            return 'end'
+        limit = state.get('repository_profile', {}).get('policy', {}).get('max_fixes_per_run', config.MAX_FIXES_PER_RUN)
+        if limit and sum(f.get('status') == 'applied' for f in state['fixes_applied']) >= limit:
+            state['stop_reason'] = 'Configured fix budget reached; unresolved findings remain.'
             return 'end'
         if state.get('deferred_failures') == 0:
+            state['stop_reason'] = 'No untried repair strategy remains for the current source; unresolved findings remain.'
             return 'end'
         
         if state["iteration"] < state["max_retries"]:
             return "retry"
+        state['stop_reason'] = 'Repair iteration budget exhausted; unresolved findings remain.'
         return "end"
 
     # ---------------- REPORT ---------------- #
@@ -569,6 +609,7 @@ class OrchestratorAgent:
         report = {
             **check_report,
             'ai': state.get('ai'),
+            'stop_reason': state.get('stop_reason', ''),
             'checks': [{**c, 'output': c.get('output', '')[-4000:]} for c in check_report.get('checks', [])],
         }
         results = self.reporter.build_results(
@@ -592,6 +633,10 @@ class OrchestratorAgent:
 
     def run(self, run_id: str, repo_url: str, repo_path: str, team_name: str = "", leader_name: str = "", token: str = None):
         max_retries = int(os.getenv("MAX_RETRIES", 5))
+        inventory = RepositoryInventory(repo_path)
+        batch_size = inventory.policy.fix_batch_size
+        # Reserve a first attempt for every source-file batch, plus retry rounds.
+        max_retries += (len(inventory.source_files()) + batch_size - 1) // batch_size
         emit(run_id, "OrchestratorAgent", "Run started", "START")
         emit(run_id, 'OrchestratorAgent',
              f"AI configuration: primary {config.LLM_PRIMARY_PROVIDER}; Groq {'configured' if self.groq_client else 'not configured'}; "
@@ -620,6 +665,9 @@ class OrchestratorAgent:
             "push_result": None,
             "published_commit_sha": None,
             "published_batches": 0,
+            "stop_reason": "",
         }
 
-        return self.app.invoke(initial_state, config={'recursion_limit': max_retries * 4 + 10})
+        # Findings per file are unknown until analysis; the state supplies the
+        # tighter iteration budget once discovered. Leave graph capacity for it.
+        return self.app.invoke(initial_state, config={'recursion_limit': max(10000, max_retries * 4 + 10)})
